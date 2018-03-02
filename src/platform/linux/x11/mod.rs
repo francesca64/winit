@@ -691,7 +691,9 @@ impl EventsLoop {
                         unsafe {
                             let mut windows = self.windows.lock().unwrap();
                             let window_data = windows.get_mut(&WindowId(xev.event)).unwrap();
-                            (self.display.xlib.XSetICFocus)(window_data.ic);
+                            if let Some(ic) = window_data.ic {
+                                (self.display.xlib.XSetICFocus)(ic);
+                            }
                         }
                         callback(Event::WindowEvent { window_id, event: Focused(true) });
 
@@ -717,7 +719,9 @@ impl EventsLoop {
                         unsafe {
                             let mut windows = self.windows.lock().unwrap();
                             let window_data = windows.get_mut(&WindowId(xev.event)).unwrap();
-                            (self.display.xlib.XUnsetICFocus)(window_data.ic);
+                            if let Some(ic) = window_data.ic {
+                                (self.display.xlib.XUnsetICFocus)(ic);
+                            }
                         }
                         callback(Event::WindowEvent {
                             window_id: mkwid(xev.event),
@@ -943,46 +947,65 @@ lazy_static! {      // TODO: use a static mutex when that's possible, and put me
 }
 
 impl Window {
-    pub fn new(x_events_loop: &EventsLoop,
-               window: &::WindowAttributes,
-               pl_attribs: &PlatformSpecificWindowBuilderAttributes)
-               -> Result<Self, CreationError>
-    {
-        let win = ::std::sync::Arc::new(try!(Window2::new(&x_events_loop, window, pl_attribs)));
+    pub fn new(
+        x_events_loop: &EventsLoop,
+        window: &::WindowAttributes,
+        pl_attribs: &PlatformSpecificWindowBuilderAttributes,
+    ) -> Result<Self, CreationError> {
+        let win = Arc::new(try!(Window2::new(&x_events_loop, window, pl_attribs)));
 
         // creating IM
+        // (add fallback locales later)
         let im = unsafe {
             let _lock = GLOBAL_XOPENIM_LOCK.lock().unwrap();
 
-            let im = (x_events_loop.display.xlib.XOpenIM)(x_events_loop.display.display, ptr::null_mut(), ptr::null_mut(), ptr::null_mut());
+            let im = (x_events_loop.display.xlib.XOpenIM)(
+                x_events_loop.display.display,
+                ptr::null_mut(),
+                ptr::null_mut(),
+                ptr::null_mut(),
+            );
             if im.is_null() {
-                panic!("XOpenIM failed");
+                None
+            } else {
+                Some(im)
             }
-            im
         };
 
         // creating input context
-        let ic = unsafe {
-            let ic = (x_events_loop.display.xlib.XCreateIC)(im,
-                                              b"inputStyle\0".as_ptr() as *const _,
-                                              ffi::XIMPreeditNothing | ffi::XIMStatusNothing, b"clientWindow\0".as_ptr() as *const _,
-                                              win.id().0, ptr::null::<()>());
-            if ic.is_null() {
-                panic!("XCreateIC failed");
+        let ic = if let Some(im) = im {
+            unsafe {
+                let ic = (x_events_loop.display.xlib.XCreateIC)(
+                    im,
+                    b"inputStyle\0".as_ptr() as *const _,
+                    ffi::XIMPreeditNothing | ffi::XIMStatusNothing,
+                    b"clientWindow\0".as_ptr() as *const _,
+                    win.id().0,
+                    ptr::null::<()>(),
+                );
+                if ic.is_null() {
+                    None
+                } else {
+                    (x_events_loop.display.xlib.XSetICFocus)(ic);
+                    x_events_loop.display.check_errors().expect("Failed to call XSetICFocus");
+                    Some(ic)
+                }
             }
-            (x_events_loop.display.xlib.XSetICFocus)(ic);
-            x_events_loop.display.check_errors().expect("Failed to call XSetICFocus");
-            ic
+        } else {
+            None
         };
 
-        x_events_loop.windows.lock().unwrap().insert(win.id(), WindowData {
-            im: im,
-            ic: ic,
-            ic_spot: ffi::XPoint {x: 0, y: 0},
-            config: None,
-            multitouch: window.multitouch,
-            cursor_pos: None,
-        });
+        x_events_loop.windows.lock().unwrap().insert(
+            win.id(),
+            WindowData {
+                im,
+                ic,
+                ic_spot: ffi::XPoint { x: 0, y: 0 },
+                config: None,
+                multitouch: window.multitouch,
+                cursor_pos: None,
+            }
+        );
 
         Ok(Window {
             window: win,
@@ -1002,16 +1025,26 @@ impl Window {
             let nspot = ffi::XPoint{x: x, y: y};
             let mut windows = windows.lock().unwrap();
             let w = windows.get_mut(&self.window.id()).unwrap();
-            if w.ic_spot.x == x && w.ic_spot.y == y {
-                return
-            }
-            w.ic_spot = nspot;
-            unsafe {
-                let preedit_attr = (display.xlib.XVaCreateNestedList)
-                    (0, b"spotLocation\0", &nspot, ptr::null::<()>());
-                (display.xlib.XSetICValues)(w.ic, b"preeditAttributes\0",
-                                            preedit_attr, ptr::null::<()>());
-                (display.xlib.XFree)(preedit_attr);
+            if let Some(ic) = w.ic {
+                if w.ic_spot.x == x && w.ic_spot.y == y {
+                    return
+                }
+                w.ic_spot = nspot;
+                unsafe {
+                    let preedit_attr = (display.xlib.XVaCreateNestedList)(
+                        0,
+                        b"spotLocation\0",
+                        &nspot,
+                        ptr::null::<()>(),
+                    );
+                    (display.xlib.XSetICValues)(
+                        ic,
+                        b"preeditAttributes\0",
+                        preedit_attr,
+                        ptr::null::<()>(),
+                    );
+                    (display.xlib.XFree)(preedit_attr);
+                }
             }
         }
     }
@@ -1022,10 +1055,12 @@ impl Drop for Window {
         if let (Some(windows), Some(display)) = (self.windows.upgrade(), self.display.upgrade()) {
             let mut windows = windows.lock().unwrap();
             let w = windows.remove(&self.window.id()).unwrap();
-            let _lock = GLOBAL_XOPENIM_LOCK.lock().unwrap();
-            unsafe {
-                (display.xlib.XDestroyIC)(w.ic);
-                (display.xlib.XCloseIM)(w.im);
+            if let (Some(im), Some(ic)) = (w.im, w.ic) {
+                let _lock = GLOBAL_XOPENIM_LOCK.lock().unwrap();
+                unsafe {
+                    (display.xlib.XDestroyIC)(ic);
+                    (display.xlib.XCloseIM)(im);
+                }
             }
         }
     }
@@ -1034,8 +1069,8 @@ impl Drop for Window {
 /// State maintained for translating window-related events
 struct WindowData {
     config: Option<WindowConfig>,
-    im: ffi::XIM,
-    ic: ffi::XIC,
+    im: Option<ffi::XIM>,
+    ic: Option<ffi::XIC>,
     ic_spot: ffi::XPoint,
     multitouch: bool,
     cursor_pos: Option<(f64, f64)>,
