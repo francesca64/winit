@@ -5,7 +5,7 @@ use libc;
 use std::borrow::Borrow;
 use std::{mem, cmp, ptr};
 use std::sync::{Arc, Mutex};
-use std::os::raw::{c_int, c_long, c_uchar, c_ulong, c_void};
+use std::os::raw::{c_int, c_long, c_ulong, c_void};
 use std::thread;
 use std::time::Duration;
 
@@ -142,10 +142,13 @@ impl Window2 {
                     (display.xlib.XCreateColormap)(display.display, root, visual, ffi::AllocNone)
                 }
             } else { 0 };
-            swa.event_mask = ffi::ExposureMask | ffi::StructureNotifyMask |
-                ffi::VisibilityChangeMask | ffi::KeyPressMask | ffi::PointerMotionMask |
-                ffi::KeyReleaseMask | ffi::ButtonPressMask |
-                ffi::ButtonReleaseMask | ffi::KeymapStateMask;
+            swa.event_mask = ffi::ExposureMask
+                | ffi::StructureNotifyMask
+                | ffi::VisibilityChangeMask
+                | ffi::PointerMotionMask
+                | ffi::ButtonPressMask
+                | ffi::ButtonReleaseMask
+                | ffi::KeymapStateMask;
             swa.border_pixel = 0;
             if window_attrs.transparent {
                 swa.background_pixel = 0;
@@ -287,22 +290,30 @@ impl Window2 {
             }
 
             // Select XInput2 events
-            {
-                let mask = ffi::XI_MotionMask
-                    | ffi::XI_ButtonPressMask | ffi::XI_ButtonReleaseMask
-                    // | ffi::XI_KeyPressMask | ffi::XI_KeyReleaseMask
-                    | ffi::XI_EnterMask | ffi::XI_LeaveMask
-                    | ffi::XI_FocusInMask | ffi::XI_FocusOutMask
-                    | if window_attrs.multitouch { ffi::XI_TouchBeginMask | ffi::XI_TouchUpdateMask | ffi::XI_TouchEndMask } else { 0 };
-                unsafe {
-                    let mut event_mask = ffi::XIEventMask{
-                        deviceid: ffi::XIAllMasterDevices,
-                        mask: mem::transmute::<*const i32, *mut c_uchar>(&mask as *const i32),
-                        mask_len: mem::size_of_val(&mask) as c_int,
-                    };
-                    (display.xinput2.XISelectEvents)(display.display, x_window.window,
-                                                     &mut event_mask as *mut ffi::XIEventMask, 1);
-                };
+            let mask = {
+                let mut mask = ffi::XI_MotionMask
+                    | ffi::XI_ButtonPressMask
+                    | ffi::XI_ButtonReleaseMask
+                    | ffi::XI_KeyPressMask
+                    | ffi::XI_KeyReleaseMask
+                    | ffi::XI_EnterMask
+                    | ffi::XI_LeaveMask
+                    | ffi::XI_FocusInMask
+                    | ffi::XI_FocusOutMask;
+                if window_attrs.multitouch {
+                    mask |= ffi::XI_TouchBeginMask
+                        | ffi::XI_TouchUpdateMask
+                        | ffi::XI_TouchEndMask;
+                }
+                mask
+            };
+            unsafe {
+                util::select_xinput_events(
+                    display,
+                    x_window.window,
+                    ffi::XIAllMasterDevices,
+                    mask
+                );
             }
 
             // These properties must be set after mapping

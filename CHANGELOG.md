@@ -7,6 +7,7 @@
   `with_fullsize_content_view`.
 
 - Mapped X11 numpad keycodes (arrows, Home, End, PageUp, PageDown, Insert and Delete) to corresponding virtual keycodes
+- X11 keyboard handling rewritten to use XInput2 and libxkbcommon, adding support for compose sequences and fixing various issues.
 
 # Version 0.11.2 (2018-03-06)
 

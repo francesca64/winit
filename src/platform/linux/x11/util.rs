@@ -55,6 +55,25 @@ pub unsafe fn get_atom(xconn: &Arc<XConnection>, name: &[u8]) -> Result<ffi::Ato
     xconn.check_errors().map(|_| atom)
 }
 
+pub unsafe fn select_xinput_events(
+    xconn: &Arc<XConnection>,
+    window: c_ulong,
+    device_id: c_int,
+    mask: i32,
+) {
+    let mut event_mask = ffi::XIEventMask {
+        deviceid: device_id,
+        mask: &mask as *const _ as *mut c_uchar,
+        mask_len: mem::size_of_val(&mask) as c_int,
+    };
+    (xconn.xinput2.XISelectEvents)(
+        xconn.display,
+        window,
+        &mut event_mask as *mut ffi::XIEventMask,
+        1, // number of masks to read from pointer above
+    );
+}
+
 pub unsafe fn send_client_msg(
     xconn: &Arc<XConnection>,
     window: c_ulong,        // the window this is "about"; not necessarily this window

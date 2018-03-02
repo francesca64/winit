@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex, Weak};
 use std::sync::atomic::{self, AtomicBool};
 use std::collections::HashMap;
 use std::ffi::CStr;
-use std::os::raw::{c_char, c_int, c_long, c_uchar, c_ulong};
+use std::os::raw::{c_char, c_int, c_long, c_ulong};
 
 use libc;
 
@@ -24,9 +24,11 @@ mod events;
 mod monitor;
 mod window;
 mod xdisplay;
+mod xkb;
 mod dnd;
 mod util;
 
+use self::xkb::Xkb;
 use self::dnd::{Dnd, DndState};
 
 // API TRANSITION
@@ -39,6 +41,7 @@ use self::dnd::{Dnd, DndState};
 pub struct EventsLoop {
     display: Arc<XConnection>,
     wm_delete_window: ffi::Atom,
+    xkb: Xkb,
     dnd: Dnd,
     windows: Arc<Mutex<HashMap<WindowId, WindowData>>>,
     devices: Mutex<HashMap<DeviceId, Device>>,
@@ -92,6 +95,8 @@ impl EventsLoop {
             }
         }
 
+        let xkb = unsafe { Xkb::new(&display) }.expect("Xkb init failed");
+
         let root = unsafe { (display.xlib.XDefaultRootWindow)(display.display) };
 
         let wakeup_dummy_window = unsafe {
@@ -105,6 +110,7 @@ impl EventsLoop {
             pending_wakeup: Arc::new(AtomicBool::new(false)),
             display,
             wm_delete_window,
+            xkb,
             dnd,
             windows: Arc::new(Mutex::new(HashMap::new())),
             devices: Mutex::new(HashMap::new()),
@@ -113,21 +119,17 @@ impl EventsLoop {
             wakeup_dummy_window,
         };
 
-        {
-            // Register for device hotplug events
-            let mask = ffi::XI_HierarchyChangedMask;
-            unsafe {
-                let mut event_mask = ffi::XIEventMask{
-                    deviceid: ffi::XIAllDevices,
-                    mask: &mask as *const _ as *mut c_uchar,
-                    mask_len: mem::size_of_val(&mask) as c_int,
-                };
-                (result.display.xinput2.XISelectEvents)(result.display.display, root,
-                                                 &mut event_mask as *mut ffi::XIEventMask, 1);
-            }
-
-            result.init_device(ffi::XIAllDevices);
+        // Register for device hotplug events
+        unsafe {
+            util::select_xinput_events(
+                &result.display,
+                root,
+                ffi::XIAllDevices,
+                ffi::XI_HierarchyChangedMask
+            );
         }
+
+        result.init_device(ffi::XIAllDevices);
 
         result
     }
@@ -197,19 +199,13 @@ impl EventsLoop {
     fn process_event<F>(&mut self, xev: &mut ffi::XEvent, mut callback: F)
         where F: FnMut(Event)
     {
-        let xlib = &self.display.xlib;
-
         // Handle dead keys and other input method funtimes
         if ffi::True == unsafe { (self.display.xlib.XFilterEvent)(xev, { let xev: &ffi::XAnyEvent = xev.as_ref(); xev.window }) } {
             return;
         }
 
-        match xev.get_type() {
-            ffi::MappingNotify => {
-                unsafe { (xlib.XRefreshKeyboardMapping)(xev.as_mut()); }
-                self.display.check_errors().expect("Failed to call XRefreshKeyboardMapping");
-            }
-
+        let event_type = xev.get_type();
+        match event_type {
             ffi::ClientMessage => {
                 let client_msg: &ffi::XClientMessageEvent = xev.as_ref();
 
@@ -412,92 +408,6 @@ impl EventsLoop {
                 let window_id = mkwid(window);
 
                 callback(Event::WindowEvent { window_id, event: WindowEvent::Refresh });
-            }
-
-            // FIXME: Use XInput2 + libxkbcommon for keyboard input!
-            ffi::KeyPress | ffi::KeyRelease => {
-                use events::ElementState::{Pressed, Released};
-
-                let state;
-                if xev.get_type() == ffi::KeyPress {
-                    state = Pressed;
-                } else {
-                    state = Released;
-                }
-
-                let xkev: &mut ffi::XKeyEvent = xev.as_mut();
-
-                let window = xkev.window;
-                let window_id = mkwid(window);
-
-                let modifiers = ModifiersState {
-                    alt: xkev.state & ffi::Mod1Mask != 0,
-                    shift: xkev.state & ffi::ShiftMask != 0,
-                    ctrl: xkev.state & ffi::ControlMask != 0,
-                    logo: xkev.state & ffi::Mod4Mask != 0,
-                };
-
-                let keysym = unsafe {
-                    let mut keysym = 0;
-                    (self.display.xlib.XLookupString)(xkev, ptr::null_mut(), 0, &mut keysym, ptr::null_mut());
-                    keysym
-                };
-
-                let vkey = events::keysym_to_element(keysym as libc::c_uint);
-
-                callback(Event::WindowEvent { window_id, event: WindowEvent::KeyboardInput {
-                     // Typical virtual core keyboard ID. xinput2 needs to be used to get a reliable value.
-                    device_id: mkdid(3),
-                    input: KeyboardInput {
-                        state: state,
-                        scancode: xkev.keycode - 8,
-                        virtual_keycode: vkey,
-                        modifiers,
-                    },
-                }});
-
-                if state == Pressed {
-                    let written = unsafe {
-                        use std::str;
-
-                        const INIT_BUFF_SIZE: usize = 16;
-                        let mut windows = self.windows.lock().unwrap();
-                        let window_data = {
-                            if let Some(window_data) = windows.get_mut(&WindowId(window)) {
-                                window_data
-                            } else {
-                                return;
-                            }
-                        };
-                        /* buffer allocated on heap instead of stack, due to the possible
-                         * reallocation */
-                        let mut buffer: Vec<u8> = vec![mem::uninitialized(); INIT_BUFF_SIZE];
-                        let mut keysym: ffi::KeySym = 0;
-                        let mut status: ffi::Status = 0;
-                        let mut count = (self.display.xlib.Xutf8LookupString)(window_data.ic, xkev,
-                                                                          mem::transmute(buffer.as_mut_ptr()),
-                                                                          buffer.len() as libc::c_int,
-                                                                          &mut keysym, &mut status);
-                        /* buffer overflowed, dynamically reallocate */
-                        if status == ffi::XBufferOverflow {
-                            buffer = vec![mem::uninitialized(); count as usize];
-                            count = (self.display.xlib.Xutf8LookupString)(window_data.ic, xkev,
-                                                                          mem::transmute(buffer.as_mut_ptr()),
-                                                                          buffer.len() as libc::c_int,
-                                                                          &mut keysym, &mut status);
-                        }
-
-                        str::from_utf8(&buffer[..count as usize]).unwrap_or("").to_string()
-                    };
-
-                    for chr in written.chars() {
-                        let event = Event::WindowEvent {
-                            window_id,
-                            event: WindowEvent::ReceivedCharacter(chr),
-                        };
-                        callback(event);
-                    }
-                }
             }
 
             ffi::GenericEvent => {
@@ -855,19 +765,77 @@ impl EventsLoop {
                     }
 
                     ffi::XI_RawKeyPress | ffi::XI_RawKeyRelease => {
-                        // TODO: Use xkbcommon for keysym and text decoding
                         let xev: &ffi::XIRawEvent = unsafe { &*(xev.data as *const _) };
-                        let xkeysym = unsafe { (self.display.xlib.XKeycodeToKeysym)(self.display.display, xev.detail as ffi::KeyCode, 0) };
-                        callback(Event::DeviceEvent { device_id: mkdid(xev.deviceid), event: DeviceEvent::Key(KeyboardInput {
-                            scancode: (xev.detail - 8) as u32,
-                            virtual_keycode: events::keysym_to_element(xkeysym as libc::c_uint),
-                            state: match xev.evtype {
-                                ffi::XI_RawKeyPress => Pressed,
-                                ffi::XI_RawKeyRelease => Released,
-                                _ => unreachable!(),
+
+                        let state = match xev.evtype {
+                            ffi::XI_RawKeyPress => Pressed,
+                            ffi::XI_RawKeyRelease => Released,
+                            _ => unreachable!(),
+                        };
+
+                        let device_id = xev.sourceid;
+
+                        let data = unsafe { self.xkb.get_data_raw(
+                            device_id,
+                            xev.detail,
+                            state,
+                        ) };
+
+                        callback(Event::DeviceEvent {
+                            device_id: mkdid(device_id),
+                            event: DeviceEvent::Key(KeyboardInput {
+                                scancode: data.scancode,
+                                virtual_keycode: data.virtual_keycode,
+                                state,
+                                modifiers: data.modifiers,
+                            }),
+                        });
+                    }
+
+                    ffi::XI_KeyPress | ffi::XI_KeyRelease => {
+                        let xev: &ffi::XIDeviceEvent = unsafe { &*(xev.data as *const _) };
+
+                        let state = match xev.evtype {
+                            ffi::XI_KeyPress => Pressed,
+                            ffi::XI_KeyRelease => Released,
+                            _ => unreachable!(),
+                        };
+
+                        // deviceid = virtual/master keyboard ID
+                        // sourceid = specific physical keyboard ID
+                        // (for the raw version above, the physical keyboard ID is both fields)
+                        let device_id = xev.deviceid;
+
+                        let data = unsafe { self.xkb.get_data(
+                            device_id,
+                            xev.detail,
+                            state,
+                        ) };
+
+                        let window_id = mkwid(xev.event);
+
+                        callback(Event::WindowEvent {
+                            window_id,
+                            event: WindowEvent::KeyboardInput {
+                                device_id: mkdid(device_id),
+                                input: KeyboardInput {
+                                    scancode: data.scancode,
+                                    virtual_keycode: data.virtual_keycode,
+                                    state,
+                                    modifiers: data.modifiers,
+                                },
                             },
-                            modifiers: ModifiersState::default(),
-                        })});
+                        });
+
+                        // This will never be Some when Released
+                        if let Some(ref utf8) = data.utf8 {
+                            for chr in utf8.chars() {
+                                callback(Event::WindowEvent {
+                                    window_id,
+                                    event: WindowEvent::ReceivedCharacter(chr),
+                                });
+                            }
+                        }
                     }
 
                     ffi::XI_HierarchyChanged => {
@@ -888,7 +856,49 @@ impl EventsLoop {
                 }
             }
 
-            _ => {}
+            _ => {
+                if event_type == c_int::from(self.xkb.event_code) {
+                    let xev: &ffi::XkbAnyEvent = unsafe { &*(xev as *const _ as *const _) };
+                    match xev.xkb_type {
+                        ffi::XkbNewKeyboardNotify => {
+                            let xev: &ffi::XkbNewKeyboardNotifyEvent = unsafe {
+                                &*(xev as *const _ as *const _)
+                            };
+                            unsafe {
+                                self.xkb.create_state(xev.device)
+                            }.expect("Failed to create XkbState for new keyboard");
+                        }
+
+                        ffi::XkbMapNotify => {
+                            let xev: &ffi::XkbMapNotifyEvent = unsafe {
+                                &*(xev as *const _ as *const _)
+                            };
+                            unsafe {
+                                self.xkb.create_state(xev.device)
+                            }.expect("Failed to replace XkbState for new mapping");
+                        }
+
+                        ffi::XkbStateNotify => {
+                            let xev: &ffi::XkbStateNotifyEvent = unsafe {
+                                &*(xev as *const _ as *const _)
+                            };
+                            unsafe {
+                                self.xkb.update(
+                                    xev.device,
+                                    xev.base_mods,
+                                    xev.latched_mods,
+                                    xev.locked_mods,
+                                    xev.base_group,
+                                    xev.latched_group,
+                                    xev.locked_group,
+                                );
+                            }
+                        }
+
+                        _ => {}
+                    }
+                }
+            }
         }
     }
 
@@ -1196,15 +1206,17 @@ impl Device {
         if Device::physical_device(info) {
             // Register for global raw events
             let mask = ffi::XI_RawMotionMask
-                | ffi::XI_RawButtonPressMask | ffi::XI_RawButtonReleaseMask
-                | ffi::XI_RawKeyPressMask | ffi::XI_RawKeyReleaseMask;
+                | ffi::XI_RawButtonPressMask
+                | ffi::XI_RawButtonReleaseMask
+                | ffi::XI_RawKeyPressMask
+                | ffi::XI_RawKeyReleaseMask;
             unsafe {
-                let mut event_mask = ffi::XIEventMask{
-                    deviceid: info.deviceid,
-                    mask: &mask as *const _ as *mut c_uchar,
-                    mask_len: mem::size_of_val(&mask) as c_int,
-                };
-                (el.display.xinput2.XISelectEvents)(el.display.display, el.root, &mut event_mask as *mut ffi::XIEventMask, 1);
+                util::select_xinput_events(
+                    &el.display,
+                    el.root,
+                    info.deviceid,
+                    mask
+                );
             }
 
             // Identify scroll axes
