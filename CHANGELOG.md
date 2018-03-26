@@ -1,6 +1,7 @@
 # Unreleased
 
 - Added subclass to macos windows so they can be made resizable even with no decorations.
+- Fixed thread safety issues with input methods on X11.
 
 # Version 0.11.3 (2018-03-28)
 

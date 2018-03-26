@@ -247,3 +247,99 @@ pub unsafe fn query_pointer(
         relative_to_window,
     })
 }
+
+// Important: all XIM calls need to happen from the same thread!
+pub struct Ime {
+    xconn: Arc<XConnection>,
+    pub im: ffi::XIM,
+    pub ic: ffi::XIC,
+    ic_spot: ffi::XPoint,
+}
+
+impl Ime {
+    pub fn new(xconn: Arc<XConnection>, window: ffi::Window) -> Option<Self> {
+        let im = unsafe {
+            let im = (xconn.xlib.XOpenIM)(
+                xconn.display,
+                ptr::null_mut(),
+                ptr::null_mut(),
+                ptr::null_mut(),
+            );
+            if im.is_null() {
+                return None;
+            }
+            im
+        };
+
+        let ic = unsafe {
+            let ic = (xconn.xlib.XCreateIC)(
+                im,
+                b"inputStyle\0".as_ptr() as *const _,
+                ffi::XIMPreeditNothing | ffi::XIMStatusNothing,
+                b"clientWindow\0".as_ptr() as *const _,
+                window,
+                ptr::null::<()>(),
+            );
+            if ic.is_null() {
+                return None;
+            }
+            (xconn.xlib.XSetICFocus)(ic);
+            xconn.check_errors().expect("Failed to call XSetICFocus");
+            ic
+        };
+
+        Some(Ime {
+            xconn,
+            im,
+            ic,
+            ic_spot: ffi::XPoint { x: 0, y: 0 },
+        })
+    }
+
+    pub fn focus(&self) -> Result<(), XError> {
+        unsafe {
+            (self.xconn.xlib.XSetICFocus)(self.ic);
+        }
+        self.xconn.check_errors()
+    }
+
+    pub fn unfocus(&self) -> Result<(), XError> {
+        unsafe {
+            (self.xconn.xlib.XUnsetICFocus)(self.ic);
+        }
+        self.xconn.check_errors()
+    }
+
+    pub fn send_xim_spot(&mut self, x: i16, y: i16) {
+        let nspot = ffi::XPoint { x: x as _, y: y as _ };
+        if self.ic_spot.x == x && self.ic_spot.y == y {
+            return;
+        }
+        self.ic_spot = nspot;
+        unsafe {
+            let preedit_attr = (self.xconn.xlib.XVaCreateNestedList)(
+                0,
+                b"spotLocation\0",
+                &nspot,
+                ptr::null::<()>(),
+            );
+            (self.xconn.xlib.XSetICValues)(
+                self.ic,
+                b"preeditAttributes\0",
+                preedit_attr,
+                ptr::null::<()>(),
+            );
+            (self.xconn.xlib.XFree)(preedit_attr);
+        }
+    }
+}
+
+impl Drop for Ime {
+    fn drop(&mut self) {
+        unsafe {
+            (self.xconn.xlib.XDestroyIC)(self.ic);
+            (self.xconn.xlib.XCloseIM)(self.im);
+        }
+        self.xconn.check_errors().expect("Failed to close input method");
+    }
+}
