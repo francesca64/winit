@@ -14,7 +14,7 @@ use events::ModifiersState;
 use std::{mem, ptr, slice};
 use std::sync::{Arc, Mutex, Weak};
 use std::sync::atomic::{self, AtomicBool};
-use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::mpsc;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ffi::CStr;
@@ -27,9 +27,11 @@ mod monitor;
 mod window;
 mod xdisplay;
 mod dnd;
+mod ime;
 mod util;
 
 use self::dnd::{Dnd, DndState};
+use self::ime::{ImeReceiver, ImeSender, Ime};
 
 // API TRANSITION
 //
@@ -42,9 +44,9 @@ pub struct EventsLoop {
     display: Arc<XConnection>,
     wm_delete_window: ffi::Atom,
     dnd: Dnd,
-    ime_receiver: Receiver<(WindowId, i16, i16)>,
-    ime_sender: Sender<(WindowId, i16, i16)>,
-    ime: RefCell<HashMap<WindowId, util::Ime>>,
+    ime_receiver: ImeReceiver,
+    ime_sender: ImeSender,
+    ime: RefCell<Ime>,
     windows: Arc<Mutex<HashMap<WindowId, WindowData>>>,
     devices: Mutex<HashMap<DeviceId, Device>>,
     xi2ext: XExtension,
@@ -70,7 +72,9 @@ impl EventsLoop {
         let dnd = Dnd::new(Arc::clone(&display))
             .expect("Failed to call XInternAtoms when initializing drag and drop");
 
-        let (ime_sender, ime_receiver) = channel();
+        let (ime_sender, ime_receiver) = mpsc::channel();
+        let ime = RefCell::new(Ime::new(Arc::clone(&display))
+            .expect("Failed to open input method"));
 
         let xi2ext = unsafe {
             let mut result = XExtension {
@@ -115,7 +119,7 @@ impl EventsLoop {
             dnd,
             ime_receiver,
             ime_sender,
-            ime: RefCell::new(HashMap::new()),
+            ime,
             windows: Arc::new(Mutex::new(HashMap::new())),
             devices: Mutex::new(HashMap::new()),
             xi2ext,
@@ -413,7 +417,10 @@ impl EventsLoop {
 
                 let window = xev.window;
 
-                self.ime.borrow_mut().remove(&WindowId(window));
+                self.ime
+                    .borrow_mut()
+                    .destroy_context(window)
+                    .expect("Failed to destroy input context");
             }
 
             ffi::Expose => {
@@ -471,11 +478,7 @@ impl EventsLoop {
 
                 if state == Pressed {
                     let written = unsafe {
-                        if let Some(ime) = self.ime.borrow().get(&WindowId(window)) {
-                            if ime.is_destroyed() {
-                                return;
-                            }
-
+                        if let Some(ic) = self.ime.borrow().get_context(window) {
                             use std::str;
 
                             const INIT_BUFF_SIZE: usize = 16;
@@ -485,14 +488,14 @@ impl EventsLoop {
                             let mut buffer: Vec<u8> = vec![mem::uninitialized(); INIT_BUFF_SIZE];
                             let mut keysym: ffi::KeySym = 0;
                             let mut status: ffi::Status = 0;
-                            let mut count = (self.display.xlib.Xutf8LookupString)(ime.ic, xkev,
+                            let mut count = (self.display.xlib.Xutf8LookupString)(ic, xkev,
                                                                               mem::transmute(buffer.as_mut_ptr()),
                                                                               buffer.len() as libc::c_int,
                                                                               &mut keysym, &mut status);
                             /* buffer overflowed, dynamically reallocate */
                             if status == ffi::XBufferOverflow {
                                 buffer = vec![mem::uninitialized(); count as usize];
-                                count = (self.display.xlib.Xutf8LookupString)(ime.ic, xkev,
+                                count = (self.display.xlib.Xutf8LookupString)(ic, xkev,
                                                                               mem::transmute(buffer.as_mut_ptr()),
                                                                               buffer.len() as libc::c_int,
                                                                               &mut keysym, &mut status);
@@ -749,11 +752,13 @@ impl EventsLoop {
 
                         let window_id = mkwid(xev.event);
 
-                        if let Some(ime) = self.ime.borrow().get(&WindowId(xev.event)) {
-                            ime.focus().expect("Failed to focus input context");
-                        } else {
+                        if let None = self.windows.lock().unwrap().get(&WindowId(xev.event)) {
                             return;
                         }
+                        self.ime
+                            .borrow_mut()
+                            .focus(xev.event)
+                            .expect("Failed to focus input context");
 
                         callback(Event::WindowEvent { window_id, event: Focused(true) });
 
@@ -777,11 +782,13 @@ impl EventsLoop {
                     ffi::XI_FocusOut => {
                         let xev: &ffi::XIFocusOutEvent = unsafe { &*(xev.data as *const _) };
 
-                        if let Some(ime) = self.ime.borrow().get(&WindowId(xev.event)) {
-                            ime.unfocus().expect("Failed to unfocus input context");
-                        } else {
+                        if let None = self.windows.lock().unwrap().get(&WindowId(xev.event)) {
                             return;
                         }
+                        self.ime
+                            .borrow_mut()
+                            .unfocus(xev.event)
+                            .expect("Failed to unfocus input context");
 
                         callback(Event::WindowEvent {
                             window_id: mkwid(xev.event),
@@ -901,9 +908,7 @@ impl EventsLoop {
 
         match self.ime_receiver.try_recv() {
             Ok((window_id, x, y)) => {
-                if let Some(ime) = self.ime.borrow_mut().get_mut(&window_id) {
-                    ime.send_xim_spot(x, y);
-                }
+                self.ime.borrow_mut().send_xim_spot(window_id, x, y);
             }
             Err(_) => ()
         }
@@ -1000,7 +1005,7 @@ pub struct Window {
     pub window: Arc<Window2>,
     display: Weak<XConnection>,
     windows: Weak<Mutex<HashMap<WindowId, WindowData>>>,
-    ime_sender: Sender<(WindowId, i16, i16)>,
+    ime_sender: ImeSender,
 }
 
 impl ::std::ops::Deref for Window {
@@ -1019,16 +1024,10 @@ impl Window {
     ) -> Result<Self, CreationError> {
         let win = Arc::new(try!(Window2::new(&x_events_loop, window, pl_attribs)));
 
-        {
-            let mut ime_map = x_events_loop.ime.borrow_mut();
-            let ime = util::Ime::new(
-                Arc::clone(&x_events_loop.display),
-                win.id().0,
-                &mut *ime_map as *mut _,
-                None,
-            ).expect("Failed to initialize IME");
-            ime_map.insert(win.id(), ime);
-        }
+        x_events_loop.ime
+            .borrow_mut()
+            .create_context(win.id().0)
+            .expect("Failed to create input context");
 
         x_events_loop.windows.lock().unwrap().insert(win.id(), WindowData {
             config: None,
@@ -1051,7 +1050,7 @@ impl Window {
 
     #[inline]
     pub fn send_xim_spot(&self, x: i16, y: i16) {
-        let _ = self.ime_sender.send((self.window.id(), x, y));
+        let _ = self.ime_sender.send((self.window.id().0, x, y));
     }
 }
 
