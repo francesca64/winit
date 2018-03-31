@@ -456,20 +456,26 @@ impl EventsLoop {
 
                 let vkey = events::keysym_to_element(keysym as libc::c_uint);
 
-                callback(Event::WindowEvent { window_id, event: WindowEvent::KeyboardInput {
-                     // Typical virtual core keyboard ID. xinput2 needs to be used to get a reliable value.
-                    device_id: mkdid(3),
-                    input: KeyboardInput {
-                        state: state,
-                        scancode: xkev.keycode - 8,
-                        virtual_keycode: vkey,
-                        modifiers,
-                    },
-                }});
+                if xkev.keycode != 0 {
+                    callback(Event::WindowEvent { window_id, event: WindowEvent::KeyboardInput {
+                         // Typical virtual core keyboard ID. xinput2 needs to be used to get a reliable value.
+                        device_id: mkdid(3),
+                        input: KeyboardInput {
+                            state: state,
+                            scancode: xkev.keycode - 8,
+                            virtual_keycode: vkey,
+                            modifiers,
+                        },
+                    }});
+                }
 
                 if state == Pressed {
                     let written = unsafe {
                         if let Some(ime) = self.ime.borrow().get(&WindowId(window)) {
+                            if ime.is_destroyed() {
+                                return;
+                            }
+
                             use std::str;
 
                             const INIT_BUFF_SIZE: usize = 16;
@@ -1013,9 +1019,16 @@ impl Window {
     ) -> Result<Self, CreationError> {
         let win = Arc::new(try!(Window2::new(&x_events_loop, window, pl_attribs)));
 
-        let ime = util::Ime::new(Arc::clone(&x_events_loop.display), win.id().0)
-            .expect("Failed to initialize IME");
-        x_events_loop.ime.borrow_mut().insert(win.id(), ime);
+        {
+            let mut ime_map = x_events_loop.ime.borrow_mut();
+            let ime = util::Ime::new(
+                Arc::clone(&x_events_loop.display),
+                win.id().0,
+                &mut *ime_map as *mut _,
+                None,
+            ).expect("Failed to initialize IME");
+            ime_map.insert(win.id(), ime);
+        }
 
         x_events_loop.windows.lock().unwrap().insert(win.id(), WindowData {
             config: None,

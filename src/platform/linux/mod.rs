@@ -310,6 +310,8 @@ unsafe extern "C" fn x_error_callback(dpy: *mut x11::ffi::Display, event: *mut x
             minor_code: (*event).minor_code,
         };
 
+        eprintln!("{:?}", error);
+
         *x.latest_error.lock().unwrap() = Some(error);
     }
 
