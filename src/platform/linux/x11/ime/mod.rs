@@ -10,6 +10,8 @@ use std::sync::Arc;
 use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, Sender};
 
+use libc::{setlocale, LC_CTYPE};
+
 use super::{ffi, XConnection, XError};
 
 use self::inner::ImeInner;
@@ -39,6 +41,8 @@ impl Ime {
         ));
         let client_data = Box::into_raw(inner);
         unsafe {
+            setlocale(LC_CTYPE, b"\0".as_ptr() as *const _);
+            (xconn.xlib.XSetLocaleModifiers)(b"\0".as_ptr() as *const _);
             let im = Ime::open_im(&xconn, client_data);
             inner = Box::from_raw(client_data);
             im
@@ -152,7 +156,7 @@ impl Ime {
             return;
         }
         if let Some(&mut Some(ref mut context)) = self.inner.contexts.get_mut(&window) {
-            context.send_xim_spot(&self.xconn, x as _, y as _);
+            context.set_spot(&self.xconn, x as _, y as _);
         }
     }
 }

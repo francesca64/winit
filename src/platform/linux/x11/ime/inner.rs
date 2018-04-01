@@ -11,7 +11,7 @@ pub struct ImeInner {
     pub im: ffi::XIM,
     pub contexts: HashMap<ffi::Window, Option<ImeContext>>,
     // Indicates whether or not the the input method was destroyed on the server end
-    // (i.e. if ibus/etc. was terminated/restarted)
+    // (i.e. if ibus/fcitx/etc. was terminated/restarted)
     pub destroyed: bool,
 }
 

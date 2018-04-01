@@ -29,8 +29,6 @@ impl ImeContext {
         };
 
         let ic = ic.ok_or(NewImeContextError::Null)?;
-
-        (xconn.xlib.XSetICFocus)(ic);
         xconn.check_errors().map_err(NewImeContextError::XError)?;
 
         Ok(ImeContext {
@@ -81,7 +79,6 @@ impl ImeContext {
             preedit_attr,
             ptr::null_mut::<()>(),
         );
-        // can we use XSmartPointer for this?
         (xconn.xlib.XFree)(preedit_attr);
         if ic.is_null() {
             None
@@ -104,7 +101,7 @@ impl ImeContext {
         xconn.check_errors()
     }
 
-    pub fn send_xim_spot(&mut self, xconn: &Arc<XConnection>, x: c_short, y: c_short) {
+    pub fn set_spot(&mut self, xconn: &Arc<XConnection>, x: c_short, y: c_short) {
         let nspot = ffi::XPoint { x, y };
         if self.ic_spot.x == x && self.ic_spot.y == y {
             return;
