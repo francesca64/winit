@@ -42,7 +42,7 @@ pub unsafe extern fn xim_instantiate_callback(
             Some(xim_instantiate_callback),
             client_data,
         );
-        let im = Ime::open_im(xconn, inner)
+        let im = Ime::open_im(xconn, &*inner)
             .expect("Failed to reopen input method");
         (*inner).im = im;
         for (window, old_context) in (*inner).contexts.iter_mut() {

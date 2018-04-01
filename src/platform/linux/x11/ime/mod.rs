@@ -4,10 +4,8 @@ mod inner;
 mod context;
 mod callbacks;
 
-use std::mem;
 use std::ptr;
 use std::sync::Arc;
-use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, Sender};
 
 use libc::{setlocale, LC_CTYPE};
@@ -20,6 +18,8 @@ use self::callbacks::*;
 
 pub type ImeReceiver = Receiver<(ffi::Window, i16, i16)>;
 pub type ImeSender = Sender<(ffi::Window, i16, i16)>;
+
+// we need a fallback in case ibus/etc. is outright killed
 
 #[derive(Debug)]
 pub enum NewImeError {
@@ -34,18 +34,22 @@ pub struct Ime {
 
 impl Ime {
     pub fn new(xconn: Arc<XConnection>) -> Result<Self, NewImeError> {
-        let mut inner = Box::new(ImeInner::new(
-            Arc::clone(&xconn),
-            unsafe { mem::zeroed() },
-            HashMap::new(),
-        ));
-        let client_data = Box::into_raw(inner);
+        let mut inner = {
+            let mut inner = Box::new(ImeInner::new(Arc::clone(&xconn)));
+            let client_data = Box::into_raw(inner);
+            let destroy_callback = ffi::XIMCallback {
+                client_data: client_data as _,
+                callback: Some(xim_destroy_callback),
+            };
+            inner = unsafe { Box::from_raw(client_data) };
+            inner.destroy_callback = destroy_callback;
+            inner
+        };
+
         unsafe {
             setlocale(LC_CTYPE, b"\0".as_ptr() as *const _);
             (xconn.xlib.XSetLocaleModifiers)(b"\0".as_ptr() as *const _);
-            let im = Ime::open_im(&xconn, client_data);
-            inner = Box::from_raw(client_data);
-            im
+            Ime::open_im(&xconn, &*inner)
         }.map(|im| {
             (*inner).im = im;
             Ime {
@@ -57,7 +61,7 @@ impl Ime {
 
     unsafe fn open_im(
         xconn: &Arc<XConnection>,
-        client_data: *mut ImeInner,
+        inner: &ImeInner,
     ) -> Result<ffi::XIM, NewImeError> {
         let im = (xconn.xlib.XOpenIM)(
             xconn.display,
@@ -69,16 +73,11 @@ impl Ime {
             return Err(NewImeError::Null);
         }
 
-        let destroy_callback = ffi::XIMCallback {
-            client_data: client_data as _,
-            callback: Some(xim_destroy_callback),
-        };
         xim_set_callback(
             &xconn,
             im,
             ffi::XNDestroyCallback_0.as_ptr() as *const _,
-            // Make sure this isn't a leak...
-            Box::into_raw(Box::new(destroy_callback)),
+            &inner.destroy_callback as *const _ as *mut _,
         ).map_err(NewImeError::XError)?;
 
         Ok(im)
