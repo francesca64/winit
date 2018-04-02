@@ -4,12 +4,13 @@ use std::collections::HashMap;
 
 use super::{ffi, XConnection};
 
+use super::input_method::PotentialInputMethods;
 use super::context::ImeContext;
 
 pub struct ImeInner {
     pub xconn: Arc<XConnection>,
-    // Danger: this is initially zeroed!
     pub im: ffi::XIM,
+    pub potential_input_methods: PotentialInputMethods,
     pub contexts: HashMap<ffi::Window, Option<ImeContext>>,
     // Danger: this is initially zeroed!
     pub destroy_callback: ffi::XIMCallback,
@@ -19,10 +20,15 @@ pub struct ImeInner {
 }
 
 impl ImeInner {
-    pub fn new(xconn: Arc<XConnection>) -> Self {
+    pub fn new(
+        xconn: Arc<XConnection>,
+        im: ffi::XIM,
+        potential_input_methods: PotentialInputMethods,
+    ) -> Self {
         ImeInner {
             xconn,
-            im: unsafe { mem::zeroed() },
+            im,
+            potential_input_methods,
             contexts: HashMap::new(),
             destroy_callback: unsafe { mem::zeroed() },
             destroyed: false,

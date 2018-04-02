@@ -1,18 +1,19 @@
 // Important: all XIM calls need to happen from the same thread!
 
 mod inner;
+mod input_method;
 mod context;
 mod callbacks;
 
 use std::ptr;
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender};
+use std::ffi::CStr;
 
-use libc::{setlocale, LC_CTYPE};
-
-use super::{ffi, XConnection, XError};
+use super::{ffi, util, XConnection, XError};
 
 use self::inner::ImeInner;
+use self::input_method::PotentialInputMethods;
 use self::context::{NewImeContextError, ImeContext};
 use self::callbacks::*;
 
@@ -22,65 +23,86 @@ pub type ImeSender = Sender<(ffi::Window, i16, i16)>;
 // we need a fallback in case ibus/etc. is outright killed
 
 #[derive(Debug)]
-pub enum NewImeError {
+pub enum ImeCreationError {
     XError(XError),
-    Null,
+    OpenFailure(PotentialInputMethods),
+}
+
+impl From<XError> for ImeCreationError {
+    fn from(err: XError) -> Self {
+        ImeCreationError::XError(err)
+    }
+}
+
+unsafe fn open_im(
+    xconn: &Arc<XConnection>,
+    locale: &CStr,
+) -> Option<ffi::XIM> {
+    (xconn.xlib.XSetLocaleModifiers)(locale.as_ptr());
+
+    let im = (xconn.xlib.XOpenIM)(
+        xconn.display,
+        ptr::null_mut(),
+        ptr::null_mut(),
+        ptr::null_mut(),
+    );
+
+    if im.is_null() {
+        None
+    } else {
+        Some(im)
+    }
+}
+
+unsafe fn set_destroy_callback(
+    xconn: &Arc<XConnection>,
+    im: ffi::XIM,
+    inner: &ImeInner,
+) -> Result<(), XError> {
+    xim_set_callback(
+        &xconn,
+        im,
+        ffi::XNDestroyCallback_0.as_ptr() as *const _,
+        &inner.destroy_callback as *const _ as *mut _,
+    )
 }
 
 pub struct Ime {
-    xconn: Arc<XConnection>,
     inner: Box<ImeInner>,
 }
 
 impl Ime {
-    pub fn new(xconn: Arc<XConnection>) -> Result<Self, NewImeError> {
-        let mut inner = {
-            let mut inner = Box::new(ImeInner::new(Arc::clone(&xconn)));
-            let client_data = Box::into_raw(inner);
-            let destroy_callback = ffi::XIMCallback {
-                client_data: client_data as _,
-                callback: Some(xim_destroy_callback),
+    pub fn new(xconn: Arc<XConnection>) -> Result<Self, ImeCreationError> {
+        let mut potential_input_methods = PotentialInputMethods::new(&xconn);
+        let im = potential_input_methods.open_im(&xconn);
+        println!("IM {:?}", im);
+        println!("(POTENTIAL {:#?})", potential_input_methods);
+        if let Some(im) = im.ok() {
+            let mut inner = {
+                let mut inner = Box::new(ImeInner::new(
+                    xconn,
+                    im.im,
+                    potential_input_methods,
+                ));
+                let client_data = Box::into_raw(inner);
+                let destroy_callback = ffi::XIMCallback {
+                    client_data: client_data as _,
+                    callback: Some(xim_destroy_callback),
+                };
+                inner = unsafe { Box::from_raw(client_data) };
+                inner.destroy_callback = destroy_callback;
+                inner
             };
-            inner = unsafe { Box::from_raw(client_data) };
-            inner.destroy_callback = destroy_callback;
-            inner
-        };
-
-        unsafe {
-            setlocale(LC_CTYPE, b"\0".as_ptr() as *const _);
-            (xconn.xlib.XSetLocaleModifiers)(b"\0".as_ptr() as *const _);
-            Ime::open_im(&xconn, &*inner)
-        }.map(|im| {
-            (*inner).im = im;
-            Ime {
-                xconn,
-                inner,
-            }
-        })
+            unsafe { set_destroy_callback(&inner.xconn, im.im, &*inner) }?;
+            Ok(Ime { inner })
+        } else {
+            Err(ImeCreationError::OpenFailure(potential_input_methods))
+        }
     }
 
-    unsafe fn open_im(
-        xconn: &Arc<XConnection>,
-        inner: &ImeInner,
-    ) -> Result<ffi::XIM, NewImeError> {
-        let im = (xconn.xlib.XOpenIM)(
-            xconn.display,
-            ptr::null_mut(),
-            ptr::null_mut(),
-            ptr::null_mut(),
-        );
-        if im.is_null() {
-            return Err(NewImeError::Null);
-        }
-
-        xim_set_callback(
-            &xconn,
-            im,
-            ffi::XNDestroyCallback_0.as_ptr() as *const _,
-            &inner.destroy_callback as *const _ as *mut _,
-        ).map_err(NewImeError::XError)?;
-
-        Ok(im)
+    // HA HA HA
+    fn get_xconn<'a, 'b>(&'a self) -> &'b Arc<XConnection> {
+        unsafe { &*(&self.inner.xconn as *const _) }
     }
 
     pub fn is_destroyed(&self) -> bool {
@@ -107,11 +129,12 @@ impl Ime {
         if self.is_destroyed() {
             return Ok(());
         }
+        let xconn = self.get_xconn();
         if let Some(Some(context)) = self.inner.contexts.remove(&window) {
             unsafe {
-                (self.xconn.xlib.XDestroyIC)(context.ic);
+                (xconn.xlib.XDestroyIC)(context.ic);
             }
-            self.xconn.check_errors()
+            xconn.check_errors()
         } else {
             Ok(())
         }
@@ -132,8 +155,9 @@ impl Ime {
         if self.is_destroyed() {
             return Ok(());
         }
+        let xconn = self.get_xconn();
         if let Some(&mut Some(ref mut context)) = self.inner.contexts.get_mut(&window) {
-            context.focus(&self.xconn)
+            context.focus(xconn)
         } else {
             Ok(())
         }
@@ -143,8 +167,9 @@ impl Ime {
         if self.is_destroyed() {
             return Ok(());
         }
+        let xconn = self.get_xconn();
         if let Some(&mut Some(ref mut context)) = self.inner.contexts.get_mut(&window) {
-            context.unfocus(&self.xconn)
+            context.unfocus(xconn)
         } else {
             Ok(())
         }
@@ -154,8 +179,9 @@ impl Ime {
         if self.is_destroyed() {
             return;
         }
+        let xconn = self.get_xconn();
         if let Some(&mut Some(ref mut context)) = self.inner.contexts.get_mut(&window) {
-            context.set_spot(&self.xconn, x as _, y as _);
+            context.set_spot(xconn, x as _, y as _);
         }
     }
 }
@@ -163,15 +189,16 @@ impl Ime {
 impl Drop for Ime {
     fn drop(&mut self) {
         if !self.is_destroyed() {
+            let xconn = self.get_xconn();
             unsafe {
                 for context in self.inner.contexts.values() {
                     if let &Some(ref context) = context {
-                        (self.xconn.xlib.XDestroyIC)(context.ic);
+                        (xconn.xlib.XDestroyIC)(context.ic);
                     }
                 }
-                (self.xconn.xlib.XCloseIM)(self.inner.im);
+                (xconn.xlib.XCloseIM)(self.inner.im);
             }
-            self.xconn.check_errors().expect("Failed to close input method");
+            xconn.check_errors().expect("Failed to close input method");
         }
     }
 }

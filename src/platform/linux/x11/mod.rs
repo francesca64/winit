@@ -20,7 +20,7 @@ use std::collections::HashMap;
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_int, c_long, c_uchar, c_ulong};
 
-use libc;
+use libc::{self, setlocale, LC_CTYPE};
 
 mod events;
 mod monitor;
@@ -31,7 +31,7 @@ mod ime;
 mod util;
 
 use self::dnd::{Dnd, DndState};
-use self::ime::{ImeReceiver, ImeSender, Ime};
+use self::ime::{ImeReceiver, ImeSender, ImeCreationError, Ime};
 
 // API TRANSITION
 //
@@ -73,8 +73,16 @@ impl EventsLoop {
             .expect("Failed to call XInternAtoms when initializing drag and drop");
 
         let (ime_sender, ime_receiver) = mpsc::channel();
-        let ime = RefCell::new(Ime::new(Arc::clone(&display))
-            .expect("Failed to open input method"));
+        // Input methods will open successfully without setting the locale, but it won't be
+        // possible to actually commit pre-edit sequences.
+        unsafe { setlocale(LC_CTYPE, b"\0".as_ptr() as *const _); }
+        let ime = RefCell::new({
+            let result = Ime::new(Arc::clone(&display));
+            if let Err(ImeCreationError::OpenFailure(ref state)) = result {
+                panic!(format!("Failed to open input method: {:#?}", state));
+            }
+            result.expect("Failed to set input method destruction callback")
+        });
 
         let xi2ext = unsafe {
             let mut result = XExtension {

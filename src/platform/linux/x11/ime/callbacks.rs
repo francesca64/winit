@@ -3,9 +3,8 @@ use std::ptr;
 use std::sync::Arc;
 use std::os::raw::c_char;
 
-use super::{ffi, XConnection, XError};
+use super::{ffi, XConnection, XError, set_destroy_callback};
 
-use super::Ime;
 use super::inner::ImeInner;
 use super::context::ImeContext;
 
@@ -42,9 +41,13 @@ pub unsafe extern fn xim_instantiate_callback(
             Some(xim_instantiate_callback),
             client_data,
         );
-        let im = Ime::open_im(xconn, &*inner)
-            .expect("Failed to reopen input method");
+        let im = (*inner).potential_input_methods.open_im(xconn)
+            .ok()
+            .expect("Failed to reopen input method")
+            .im;
         (*inner).im = im;
+        set_destroy_callback(xconn, im, &*inner)
+            .expect("Failed to set input method destruction callback");
         for (window, old_context) in (*inner).contexts.iter_mut() {
             let spot = old_context.as_ref().map(|context| context.ic_spot);
             let new_context = ImeContext::new(
