@@ -23,6 +23,27 @@ pub unsafe fn xim_set_callback(
     xconn.check_errors()
 }
 
+unsafe fn rebuild_im(inner: *mut ImeInner) {
+    let xconn = &(*inner).xconn;
+    let im = (*inner).potential_input_methods.open_im(xconn)
+        .ok()
+        .expect("Failed to reopen input method");
+    println!("IM {:?}", im);
+    println!("(POTENTIAL {:#?})", (*inner).potential_input_methods);
+    (*inner).im = im.im;
+    for (window, old_context) in (*inner).contexts.iter_mut() {
+        let spot = old_context.as_ref().map(|context| context.ic_spot);
+        let new_context = ImeContext::new(
+            xconn,
+            im.im,
+            *window,
+            spot,
+        ).expect("Failed to reinitialize input context");
+        let _ = mem::replace(old_context, Some(new_context));
+    }
+    (*inner).destroyed = false;
+}
+
 pub unsafe extern fn xim_instantiate_callback(
     _display: *mut ffi::Display,
     client_data: ffi::XPointer,
@@ -41,24 +62,9 @@ pub unsafe extern fn xim_instantiate_callback(
             Some(xim_instantiate_callback),
             client_data,
         );
-        let im = (*inner).potential_input_methods.open_im(xconn)
-            .ok()
-            .expect("Failed to reopen input method")
-            .im;
-        (*inner).im = im;
-        set_destroy_callback(xconn, im, &*inner)
+        rebuild_im(inner);
+        set_destroy_callback(xconn, (*inner).im, &*inner)
             .expect("Failed to set input method destruction callback");
-        for (window, old_context) in (*inner).contexts.iter_mut() {
-            let spot = old_context.as_ref().map(|context| context.ic_spot);
-            let new_context = ImeContext::new(
-                xconn,
-                im,
-                *window,
-                spot,
-            ).expect("Failed to reinitialize input context");
-            let _ = mem::replace(old_context, Some(new_context));
-        }
-        (*inner).destroyed = false;
     }
 }
 
@@ -81,5 +87,6 @@ pub unsafe extern fn xim_destroy_callback(
             Some(xim_instantiate_callback),
             client_data,
         );
+        rebuild_im(inner);
     }
 }

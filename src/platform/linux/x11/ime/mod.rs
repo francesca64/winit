@@ -20,8 +20,6 @@ use self::callbacks::*;
 pub type ImeReceiver = Receiver<(ffi::Window, i16, i16)>;
 pub type ImeSender = Sender<(ffi::Window, i16, i16)>;
 
-// we need a fallback in case ibus/etc. is outright killed
-
 #[derive(Debug)]
 pub enum ImeCreationError {
     XError(XError),
