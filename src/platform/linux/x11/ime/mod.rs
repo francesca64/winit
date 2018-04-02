@@ -5,16 +5,14 @@ mod input_method;
 mod context;
 mod callbacks;
 
-use std::ptr;
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender};
-use std::ffi::CStr;
 
 use super::{ffi, util, XConnection, XError};
 
 use self::inner::ImeInner;
 use self::input_method::PotentialInputMethods;
-use self::context::{NewImeContextError, ImeContext};
+use self::context::{ImeContextCreationError, ImeContext};
 use self::callbacks::*;
 
 pub type ImeReceiver = Receiver<(ffi::Window, i16, i16)>;
@@ -22,51 +20,14 @@ pub type ImeSender = Sender<(ffi::Window, i16, i16)>;
 
 #[derive(Debug)]
 pub enum ImeCreationError {
-    XError(XError),
     OpenFailure(PotentialInputMethods),
-}
-
-impl From<XError> for ImeCreationError {
-    fn from(err: XError) -> Self {
-        ImeCreationError::XError(err)
-    }
-}
-
-unsafe fn open_im(
-    xconn: &Arc<XConnection>,
-    locale: &CStr,
-) -> Option<ffi::XIM> {
-    (xconn.xlib.XSetLocaleModifiers)(locale.as_ptr());
-
-    let im = (xconn.xlib.XOpenIM)(
-        xconn.display,
-        ptr::null_mut(),
-        ptr::null_mut(),
-        ptr::null_mut(),
-    );
-
-    if im.is_null() {
-        None
-    } else {
-        Some(im)
-    }
-}
-
-unsafe fn set_destroy_callback(
-    xconn: &Arc<XConnection>,
-    im: ffi::XIM,
-    inner: &ImeInner,
-) -> Result<(), XError> {
-    xim_set_callback(
-        &xconn,
-        im,
-        ffi::XNDestroyCallback_0.as_ptr() as *const _,
-        &inner.destroy_callback as *const _ as *mut _,
-    )
+    SetDestroyCallback(XError),
 }
 
 pub struct Ime {
     xconn: Arc<XConnection>,
+    // The actual meat of this struct is boxed away, since it needs to have a fixed location in
+    // memory so we can pass a pointer to it around.
     inner: Box<ImeInner>,
 }
 
@@ -92,7 +53,8 @@ impl Ime {
                 inner.destroy_callback = destroy_callback;
                 inner
             };
-            unsafe { set_destroy_callback(&inner.xconn, im.im, &*inner) }?;
+            unsafe { set_destroy_callback(&inner.xconn, im.im, &*inner) }
+                .map_err(ImeCreationError::SetDestroyCallback)?;
             Ok(Ime {
                 xconn: Arc::clone(&inner.xconn),
                 inner,
@@ -106,7 +68,7 @@ impl Ime {
         self.inner.destroyed
     }
 
-    pub fn create_context(&mut self, window: ffi::Window) -> Result<(), NewImeContextError> {
+    pub fn create_context(&mut self, window: ffi::Window) -> Result<(), ImeContextCreationError> {
         let context = if self.is_destroyed() {
             // Create empty entry in map, so that when IME is rebuilt, this window has a context.
             None
@@ -147,25 +109,29 @@ impl Ime {
         }
     }
 
-    pub fn focus(&mut self, window: ffi::Window) -> Result<(), XError> {
+    // For both focus and unfocus:
+    // Ok(_) indicates that nothing went wrong internally
+    // Ok(true) indicates that the action was actually performed
+    // Ok(false) indicates that the action is not presently applicable
+    pub fn focus(&mut self, window: ffi::Window) -> Result<bool, XError> {
         if self.is_destroyed() {
-            return Ok(());
+            return Ok(false);
         }
         if let Some(&mut Some(ref mut context)) = self.inner.contexts.get_mut(&window) {
-            context.focus(&self.xconn)
+            context.focus(&self.xconn).map(|_| true)
         } else {
-            Ok(())
+            Ok(false)
         }
     }
 
-    pub fn unfocus(&mut self, window: ffi::Window) -> Result<(), XError> {
+    pub fn unfocus(&mut self, window: ffi::Window) -> Result<bool, XError> {
         if self.is_destroyed() {
-            return Ok(());
+            return Ok(false);
         }
         if let Some(&mut Some(ref mut context)) = self.inner.contexts.get_mut(&window) {
-            context.unfocus(&self.xconn)
+            context.unfocus(&self.xconn).map(|_| true)
         } else {
-            Ok(())
+            Ok(false)
         }
     }
 

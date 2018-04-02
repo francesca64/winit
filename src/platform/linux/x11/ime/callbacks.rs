@@ -3,7 +3,7 @@ use std::ptr;
 use std::sync::Arc;
 use std::os::raw::c_char;
 
-use super::{ffi, XConnection, XError, set_destroy_callback};
+use super::{ffi, XConnection, XError};
 
 use super::inner::ImeInner;
 use super::context::ImeContext;
@@ -14,6 +14,8 @@ pub unsafe fn xim_set_callback(
     field: *const c_char,
     callback: *mut ffi::XIMCallback,
 ) -> Result<(), XError> {
+    // It's advisable to wrap variadic FFI functions in our own functions, as we want to minimize
+    // access that isn't type-checked.
     (xconn.xlib.XSetIMValues)(
         xim,
         field,
@@ -23,7 +25,24 @@ pub unsafe fn xim_set_callback(
     xconn.check_errors()
 }
 
-unsafe fn rebuild_im(inner: *mut ImeInner) {
+pub unsafe fn set_destroy_callback(
+    xconn: &Arc<XConnection>,
+    im: ffi::XIM,
+    inner: &ImeInner,
+) -> Result<(), XError> {
+    xim_set_callback(
+        &xconn,
+        im,
+        ffi::XNDestroyCallback_0.as_ptr() as *const _,
+        &inner.destroy_callback as *const _ as *mut _,
+    )
+}
+
+// Attempt to replace current IM (which may or may not be presently valid) with a new one. This
+// includes replacing all existing input contexts and free'ing resources as necessary. This only
+// modifies existing state if all operations succeed.
+// WARNING: at the time of writing, this comment is a bold-faced lie.
+unsafe fn replace_im(inner: *mut ImeInner) {
     let xconn = &(*inner).xconn;
     let im = (*inner).potential_input_methods.open_im(xconn)
         .ok()
@@ -44,6 +63,10 @@ unsafe fn rebuild_im(inner: *mut ImeInner) {
     (*inner).destroyed = false;
 }
 
+// This callback is triggered when a new input method using the same locale modifiers becomes
+// available. In other words, if ibus/fcitx/etc. is restarted, this responds to that. Note that if
+// the program is started while the input method isn't running, then this won't be triggered by
+// the input method starting, since we won't be using the respective locale modifier.
 pub unsafe extern fn xim_instantiate_callback(
     _display: *mut ffi::Display,
     client_data: ffi::XPointer,
@@ -61,12 +84,17 @@ pub unsafe extern fn xim_instantiate_callback(
             Some(xim_instantiate_callback),
             client_data,
         );
-        rebuild_im(inner);
+        replace_im(inner);
+        // Allow failure if non-destroyed fallback is present
+        // otherwise panic
         set_destroy_callback(xconn, (*inner).im, &*inner)
             .expect("Failed to set input method destruction callback");
     }
 }
 
+// This callback is triggered when the input method is closed on the server end. When this
+// happens, XCloseIM/XDestroyIC doesn't need to be called, as the resources have already been free'd
+// (attempting to do so causes a freeze)
 pub unsafe extern fn xim_destroy_callback(
     _xim: ffi::XIM,
     client_data: ffi::XPointer,
@@ -85,6 +113,10 @@ pub unsafe extern fn xim_destroy_callback(
             Some(xim_instantiate_callback),
             client_data,
         );
-        rebuild_im(inner);
+        // Attempt to open fallback input method
+        // The IM+ICs we open here get leaked!
+        replace_im(inner);
+        // This needs to have a destroy callback too to ensure we don't try to free anything we
+        // shouldn't
     }
 }

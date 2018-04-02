@@ -1,15 +1,31 @@
 use std::ptr;
 use std::sync::Arc;
-use std::os::raw::c_short;
+use std::os::raw::{c_short, c_void};
 
-use super::{ffi, XConnection, XError};
+use super::{ffi, util, XConnection, XError};
 
 #[derive(Debug)]
-pub enum NewImeContextError {
+pub enum ImeContextCreationError {
     XError(XError),
     Null,
 }
 
+unsafe fn create_pre_edit_attr<'a>(
+    xconn: &'a Arc<XConnection>,
+    ic_spot: &'a ffi::XPoint,
+) -> util::XSmartPointer<'a, c_void> {
+    util::XSmartPointer::new(
+        xconn,
+        (xconn.xlib.XVaCreateNestedList)(
+            0,
+            ffi::XNSpotLocation_0.as_ptr() as *const _,
+            ic_spot,
+            ptr::null_mut::<()>(),
+        ),
+    ).expect("XVaCreateNestedList returned NULL")
+}
+
+#[derive(Debug)]
 pub struct ImeContext {
     pub ic: ffi::XIC,
     pub ic_spot: ffi::XPoint,
@@ -21,15 +37,15 @@ impl ImeContext {
         im: ffi::XIM,
         window: ffi::Window,
         ic_spot: Option<ffi::XPoint>,
-    ) -> Result<Self, NewImeContextError> {
+    ) -> Result<Self, ImeContextCreationError> {
         let ic = if let Some(ic_spot) = ic_spot {
             ImeContext::create_ic_with_spot(xconn, im, window, ic_spot)
         } else {
             ImeContext::create_ic(xconn, im, window)
         };
 
-        let ic = ic.ok_or(NewImeContextError::Null)?;
-        xconn.check_errors().map_err(NewImeContextError::XError)?;
+        let ic = ic.ok_or(ImeContextCreationError::Null)?;
+        xconn.check_errors().map_err(ImeContextCreationError::XError)?;
 
         Ok(ImeContext {
             ic,
@@ -63,12 +79,7 @@ impl ImeContext {
         window: ffi::Window,
         ic_spot: ffi::XPoint,
     ) -> Option<ffi::XIC> {
-        let preedit_attr = (xconn.xlib.XVaCreateNestedList)(
-            0,
-            ffi::XNSpotLocation_0.as_ptr() as *const _,
-            &ic_spot,
-            ptr::null_mut::<()>(),
-        );
+        let pre_edit_attr = create_pre_edit_attr(xconn, &ic_spot);
         let ic = (xconn.xlib.XCreateIC)(
             im,
             ffi::XNInputStyle_0.as_ptr() as *const _,
@@ -76,10 +87,9 @@ impl ImeContext {
             ffi::XNClientWindow_0.as_ptr() as *const _,
             window,
             ffi::XNPreeditAttributes_0.as_ptr() as *const _,
-            preedit_attr,
+            pre_edit_attr.ptr,
             ptr::null_mut::<()>(),
         );
-        (xconn.xlib.XFree)(preedit_attr);
         if ic.is_null() {
             None
         } else {
@@ -102,26 +112,19 @@ impl ImeContext {
     }
 
     pub fn set_spot(&mut self, xconn: &Arc<XConnection>, x: c_short, y: c_short) {
-        let nspot = ffi::XPoint { x, y };
         if self.ic_spot.x == x && self.ic_spot.y == y {
             return;
         }
-        self.ic_spot = nspot;
+        self.ic_spot = ffi::XPoint { x, y };
 
         unsafe {
-            let preedit_attr = (xconn.xlib.XVaCreateNestedList)(
-                0,
-                ffi::XNSpotLocation_0.as_ptr() as *const _,
-                &nspot,
-                ptr::null_mut::<()>(),
-            );
+            let pre_edit_attr = create_pre_edit_attr(xconn, &self.ic_spot);
             (xconn.xlib.XSetICValues)(
                 self.ic,
                 ffi::XNPreeditAttributes_0.as_ptr() as *const _,
-                preedit_attr,
+                pre_edit_attr.ptr,
                 ptr::null_mut::<()>(),
             );
-            (xconn.xlib.XFree)(preedit_attr);
         }
     }
 }
