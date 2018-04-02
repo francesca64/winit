@@ -66,6 +66,7 @@ unsafe fn set_destroy_callback(
 }
 
 pub struct Ime {
+    xconn: Arc<XConnection>,
     inner: Box<ImeInner>,
 }
 
@@ -92,15 +93,13 @@ impl Ime {
                 inner
             };
             unsafe { set_destroy_callback(&inner.xconn, im.im, &*inner) }?;
-            Ok(Ime { inner })
+            Ok(Ime {
+                xconn: Arc::clone(&inner.xconn),
+                inner,
+            })
         } else {
             Err(ImeCreationError::OpenFailure(potential_input_methods))
         }
-    }
-
-    // HA HA HA
-    fn get_xconn<'a, 'b>(&'a self) -> &'b Arc<XConnection> {
-        unsafe { &*(&self.inner.xconn as *const _) }
     }
 
     pub fn is_destroyed(&self) -> bool {
@@ -127,12 +126,11 @@ impl Ime {
         if self.is_destroyed() {
             return Ok(());
         }
-        let xconn = self.get_xconn();
         if let Some(Some(context)) = self.inner.contexts.remove(&window) {
             unsafe {
-                (xconn.xlib.XDestroyIC)(context.ic);
+                (self.xconn.xlib.XDestroyIC)(context.ic);
             }
-            xconn.check_errors()
+            self.xconn.check_errors()
         } else {
             Ok(())
         }
@@ -153,9 +151,8 @@ impl Ime {
         if self.is_destroyed() {
             return Ok(());
         }
-        let xconn = self.get_xconn();
         if let Some(&mut Some(ref mut context)) = self.inner.contexts.get_mut(&window) {
-            context.focus(xconn)
+            context.focus(&self.xconn)
         } else {
             Ok(())
         }
@@ -165,9 +162,8 @@ impl Ime {
         if self.is_destroyed() {
             return Ok(());
         }
-        let xconn = self.get_xconn();
         if let Some(&mut Some(ref mut context)) = self.inner.contexts.get_mut(&window) {
-            context.unfocus(xconn)
+            context.unfocus(&self.xconn)
         } else {
             Ok(())
         }
@@ -177,9 +173,8 @@ impl Ime {
         if self.is_destroyed() {
             return;
         }
-        let xconn = self.get_xconn();
         if let Some(&mut Some(ref mut context)) = self.inner.contexts.get_mut(&window) {
-            context.set_spot(xconn, x as _, y as _);
+            context.set_spot(&self.xconn, x as _, y as _);
         }
     }
 }
@@ -187,16 +182,15 @@ impl Ime {
 impl Drop for Ime {
     fn drop(&mut self) {
         if !self.is_destroyed() {
-            let xconn = self.get_xconn();
             unsafe {
                 for context in self.inner.contexts.values() {
                     if let &Some(ref context) = context {
-                        (xconn.xlib.XDestroyIC)(context.ic);
+                        (self.xconn.xlib.XDestroyIC)(context.ic);
                     }
                 }
-                (xconn.xlib.XCloseIM)(self.inner.im);
+                (self.xconn.xlib.XCloseIM)(self.inner.im);
             }
-            xconn.check_errors().expect("Failed to close input method");
+            self.xconn.check_errors().expect("Failed to close input method");
         }
     }
 }

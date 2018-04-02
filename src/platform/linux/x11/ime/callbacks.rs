@@ -50,7 +50,6 @@ pub unsafe extern fn xim_instantiate_callback(
     // This field is unsupplied
     _call_data: ffi::XPointer,
 ) {
-    println!("INSTANTIATE=XIM");
     let inner: *mut ImeInner = client_data as _;
     if !client_data.is_null() {
         let xconn = &(*inner).xconn;
@@ -74,7 +73,6 @@ pub unsafe extern fn xim_destroy_callback(
     // This field is unsupplied
     _call_data: ffi::XPointer,
 ) {
-    println!("DESTROYED=XIM");
     let inner: *mut ImeInner = client_data as _;
     if !inner.is_null() {
         (*inner).destroyed = true;
