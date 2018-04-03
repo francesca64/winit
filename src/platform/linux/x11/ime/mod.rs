@@ -84,6 +84,8 @@ impl Ime {
         Ok(())
     }
 
+    // Destroying a context and removing a context are quite semantically different
+    // even if is_destroyed, we still need to de-list the window
     pub fn destroy_context(&mut self, window: ffi::Window) -> Result<(), XError> {
         if self.is_destroyed() {
             return Ok(());
