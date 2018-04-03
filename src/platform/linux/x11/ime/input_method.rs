@@ -53,6 +53,14 @@ pub enum InputMethodResult {
 }
 
 impl InputMethodResult {
+    pub fn is_fallback(&self) -> bool {
+        if let &InputMethodResult::Fallbacks(_) = self {
+            true
+        } else {
+            false
+        }
+    }
+
     pub fn ok(self) -> Option<InputMethod> {
         use self::InputMethodResult::*;
         match self {
@@ -237,47 +245,59 @@ impl PotentialInputMethods {
         }
     }
 
+    /*pub fn get_xmodifiers(&self) -> Option<InputMethodName> {
+        self.xmodifiers.map(|input_method| input_method.name.clone())
+    }*/
+
     // This resets the `failed` field of every potential input method, ensuring we have accurate
     // information when this struct is re-used by the destruction/instantiation callbacks.
     fn reset(&mut self) {
-        if let Some(ref mut locale) = self.xmodifiers {
-            locale.reset();
+        if let Some(ref mut input_method) = self.xmodifiers {
+            input_method.reset();
         }
 
-        if let Some(ref mut locales) = self.xim_servers {
-            for locale in locales {
-                locale.reset();
+        if let Some(ref mut input_methods) = self.xim_servers {
+            for input_method in input_methods {
+                input_method.reset();
             }
         }
 
-        for locale in &mut self.fallbacks {
-            locale.reset();
+        for input_method in &mut self.fallbacks {
+            input_method.reset();
         }
     }
 
-    pub fn open_im(&mut self, xconn: &Arc<XConnection>) -> InputMethodResult {
+    pub fn open_im(
+        &mut self,
+        xconn: &Arc<XConnection>,
+        callback: Option<&Fn() -> ()>,
+    ) -> InputMethodResult {
         use self::InputMethodResult::*;
 
         self.reset();
 
-        if let Some(ref mut locale) = self.xmodifiers {
-            let im = locale.open_im(xconn);
+        if let Some(ref mut input_method) = self.xmodifiers {
+            let im = input_method.open_im(xconn);
             if let Some(im) = im {
                 return XModifiers(im);
+            } else {
+                if let Some(ref callback) = callback {
+                    callback();
+                }
             }
         }
 
-        if let Some(ref mut locales) = self.xim_servers {
-            for locale in locales {
-                let im = locale.open_im(xconn);
+        if let Some(ref mut input_methods) = self.xim_servers {
+            for input_method in input_methods {
+                let im = input_method.open_im(xconn);
                 if let Some(im) = im {
                     return XimServers(im);
                 }
             }
         }
 
-        for locale in &mut self.fallbacks {
-            let im = locale.open_im(xconn);
+        for input_method in &mut self.fallbacks {
+            let im = input_method.open_im(xconn);
             if let Some(im) = im {
                 return Fallbacks(im);
             }

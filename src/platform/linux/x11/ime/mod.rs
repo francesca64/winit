@@ -36,40 +36,47 @@ pub struct Ime {
 
 impl Ime {
     pub fn new(xconn: Arc<XConnection>) -> Result<Self, ImeCreationError> {
-        let mut potential_input_methods = PotentialInputMethods::new(&xconn);
-        let im = potential_input_methods.open_im(&xconn);
-        println!("IM {:?}", im);
-        println!("(POTENTIAL {:#?})", potential_input_methods);
-        if let Some(im) = im.ok() {
-            let mut inner = {
-                let mut inner = Box::new(ImeInner::new(
-                    xconn,
-                    im.im,
-                    potential_input_methods,
-                ));
-                let client_data = Box::into_raw(inner);
-                let destroy_callback = ffi::XIMCallback {
-                    client_data: client_data as _,
-                    callback: Some(xim_destroy_callback),
-                };
-                inner = unsafe { Box::from_raw(client_data) };
-                inner.destroy_callback = destroy_callback;
-                inner
+        let potential_input_methods = PotentialInputMethods::new(&xconn);
+
+        let (mut inner, client_data) = {
+            let mut inner = Box::new(ImeInner::new(
+                xconn,
+                potential_input_methods,
+            ));
+            let inner_ptr = Box::into_raw(inner);
+            let client_data = inner_ptr as _;
+            let destroy_callback = ffi::XIMCallback {
+                client_data,
+                callback: Some(xim_destroy_callback),
             };
+            inner = unsafe { Box::from_raw(inner_ptr) };
+            inner.destroy_callback = destroy_callback;
+            (inner, client_data)
+        };
+
+        let xconn = Arc::clone(&inner.xconn);
+
+        let input_method = inner.potential_input_methods.open_im(&xconn, Some(&|| {
+            let _ = unsafe { set_instantiate_callback(&xconn, client_data) };
+        }));
+        println!("IM {:?}", input_method);
+        println!("(POTENTIAL {:#?})", inner.potential_input_methods);
+
+        let is_fallback = input_method.is_fallback();
+        if let Some(input_method) = input_method.ok() {
+            inner.im = input_method.im;
+            inner.is_fallback = is_fallback;
             unsafe {
-                let result = set_destroy_callback(&inner.xconn, im.im, &*inner)
+                let result = set_destroy_callback(&xconn, input_method.im, &*inner)
                     .map_err(ImeCreationError::SetDestroyCallbackFailed);
                 if result.is_err() {
-                    let _ = close_im(&inner.xconn, im.im);
+                    let _ = close_im(&xconn, input_method.im);
                 }
-                result
-            }?;
-            Ok(Ime {
-                xconn: Arc::clone(&inner.xconn),
-                inner,
-            })
+                result?;
+            }
+            Ok(Ime { xconn, inner })
         } else {
-            Err(ImeCreationError::OpenFailure(potential_input_methods))
+            Err(ImeCreationError::OpenFailure(inner.potential_input_methods))
         }
     }
 

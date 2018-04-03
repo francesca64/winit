@@ -1,4 +1,5 @@
 use std::mem;
+use std::ptr;
 use std::sync::Arc;
 use std::collections::HashMap;
 
@@ -19,29 +20,31 @@ pub unsafe fn destroy_ic(xconn: &Arc<XConnection>, ic: ffi::XIC) -> Result<(), X
 
 pub struct ImeInner {
     pub xconn: Arc<XConnection>,
+    // WARNING: this is initially null!
     pub im: ffi::XIM,
     pub potential_input_methods: PotentialInputMethods,
     pub contexts: HashMap<ffi::Window, Option<ImeContext>>,
-    // Danger: this is initially zeroed!
+    // WARNING: this is initially zeroed!
     pub destroy_callback: ffi::XIMCallback,
     // Indicates whether or not the the input method was destroyed on the server end
     // (i.e. if ibus/fcitx/etc. was terminated/restarted)
     pub destroyed: bool,
+    pub is_fallback: bool,
 }
 
 impl ImeInner {
     pub fn new(
         xconn: Arc<XConnection>,
-        im: ffi::XIM,
         potential_input_methods: PotentialInputMethods,
     ) -> Self {
         ImeInner {
             xconn,
-            im,
+            im: ptr::null_mut(),
             potential_input_methods,
             contexts: HashMap::new(),
             destroy_callback: unsafe { mem::zeroed() },
             destroyed: false,
+            is_fallback: false,
         }
     }
 

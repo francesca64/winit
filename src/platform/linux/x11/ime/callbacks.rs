@@ -26,6 +26,42 @@ pub unsafe fn xim_set_callback(
     xconn.check_errors()
 }
 
+// Set a callback for when an input method matching the current locale modifiers becomes
+// available. Note that this has nothing to do with what input methods are open or able to be
+// opened, and simply uses the modifiers that are set when the callback is set.
+// * This is called per locale modifier, not per input method opened with that locale modifier.
+// * Trying to set this for multiple locale modifiers causes problems, i.e. one of the rebuilt
+//   input contexts would always silently fail to use the input method.
+pub unsafe fn set_instantiate_callback(
+    xconn: &Arc<XConnection>,
+    client_data: ffi::XPointer,
+) -> Result<(), XError> {
+    (xconn.xlib.XRegisterIMInstantiateCallback)(
+        xconn.display,
+        ptr::null_mut(),
+        ptr::null_mut(),
+        ptr::null_mut(),
+        Some(xim_instantiate_callback),
+        client_data,
+    );
+    xconn.check_errors()
+}
+
+pub unsafe fn unset_instantiate_callback(
+    xconn: &Arc<XConnection>,
+    client_data: ffi::XPointer,
+) -> Result<(), XError> {
+    (xconn.xlib.XUnregisterIMInstantiateCallback)(
+        xconn.display,
+        ptr::null_mut(),
+        ptr::null_mut(),
+        ptr::null_mut(),
+        Some(xim_instantiate_callback),
+        client_data,
+    );
+    xconn.check_errors()
+}
+
 pub unsafe fn set_destroy_callback(
     xconn: &Arc<XConnection>,
     im: ffi::XIM,
@@ -53,7 +89,7 @@ unsafe fn replace_im(inner: *mut ImeInner) -> Result<(), ImeRebuildError> {
     let xconn = &(*inner).xconn;
 
     let new_im = (*inner).potential_input_methods
-        .open_im(xconn)
+        .open_im(xconn, None)
         .ok()
         .ok_or_else(|| {
             ImeRebuildError::MethodOpenFailed((*inner).potential_input_methods.clone())
@@ -112,16 +148,11 @@ pub unsafe extern fn xim_instantiate_callback(
     let inner: *mut ImeInner = client_data as _;
     if !inner.is_null() {
         let xconn = &(*inner).xconn;
-        (xconn.xlib.XUnregisterIMInstantiateCallback)(
-            xconn.display,
-            ptr::null_mut(),
-            ptr::null_mut(),
-            ptr::null_mut(),
-            Some(xim_instantiate_callback),
-            client_data,
-        );
         let result = replace_im(inner);
-        if result.is_err() && (*inner).destroyed {
+        let _ = unset_instantiate_callback(xconn, client_data);
+        if result.is_ok() {
+            (*inner).is_fallback = false;
+        } else if result.is_err() && (*inner).destroyed {
             // We have no usable input methods!
             result.expect("Failed to reopen input method");
         }
@@ -141,19 +172,16 @@ pub unsafe extern fn xim_destroy_callback(
     if !inner.is_null() {
         (*inner).destroyed = true;
         let xconn = &(*inner).xconn;
-        (xconn.xlib.XRegisterIMInstantiateCallback)(
-            xconn.display,
-            ptr::null_mut(),
-            ptr::null_mut(),
-            ptr::null_mut(),
-            Some(xim_instantiate_callback),
-            client_data,
-        );
-        // Attempt to open fallback input method.
-        let result = replace_im(inner);
-        if result.is_err() {
-            // We have no usable input methods!
-            result.expect("Failed to open fallback input method");
+        if !(*inner).is_fallback {
+            let _ = set_instantiate_callback(xconn, client_data);
+            // Attempt to open fallback input method.
+            let result = replace_im(inner);
+            if result.is_ok() {
+                (*inner).is_fallback = true;
+            } else {
+                // We have no usable input methods!
+                result.expect("Failed to open fallback input method");
+            }
         }
     }
 }
