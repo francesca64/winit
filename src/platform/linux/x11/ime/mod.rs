@@ -10,7 +10,7 @@ use std::sync::mpsc::{Receiver, Sender};
 
 use super::{ffi, util, XConnection, XError};
 
-use self::inner::ImeInner;
+use self::inner::{close_im, ImeInner};
 use self::input_method::PotentialInputMethods;
 use self::context::{ImeContextCreationError, ImeContext};
 use self::callbacks::*;
@@ -21,7 +21,7 @@ pub type ImeSender = Sender<(ffi::Window, i16, i16)>;
 #[derive(Debug)]
 pub enum ImeCreationError {
     OpenFailure(PotentialInputMethods),
-    SetDestroyCallback(XError),
+    SetDestroyCallbackFailed(XError),
 }
 
 pub struct Ime {
@@ -30,6 +30,9 @@ pub struct Ime {
     // memory so we can pass a pointer to it around.
     inner: Box<ImeInner>,
 }
+
+// if we set a full list of locale modifiers, will we be able to create a local IM that becomes
+// aware of ibus/etc. starting?
 
 impl Ime {
     pub fn new(xconn: Arc<XConnection>) -> Result<Self, ImeCreationError> {
@@ -53,8 +56,14 @@ impl Ime {
                 inner.destroy_callback = destroy_callback;
                 inner
             };
-            unsafe { set_destroy_callback(&inner.xconn, im.im, &*inner) }
-                .map_err(ImeCreationError::SetDestroyCallback)?;
+            unsafe {
+                let result = set_destroy_callback(&inner.xconn, im.im, &*inner)
+                    .map_err(ImeCreationError::SetDestroyCallbackFailed);
+                if result.is_err() {
+                    let _ = close_im(&inner.xconn, im.im);
+                }
+                result
+            }?;
             Ok(Ime {
                 xconn: Arc::clone(&inner.xconn),
                 inner,
@@ -68,7 +77,13 @@ impl Ime {
         self.inner.destroyed
     }
 
-    pub fn create_context(&mut self, window: ffi::Window) -> Result<(), ImeContextCreationError> {
+    // This pattern is used for various methods here:
+    // Ok(_) indicates that nothing went wrong internally
+    // Ok(true) indicates that the action was actually performed
+    // Ok(false) indicates that the action is not presently applicable
+    pub fn create_context(&mut self, window: ffi::Window)
+        -> Result<bool, ImeContextCreationError>
+    {
         let context = if self.is_destroyed() {
             // Create empty entry in map, so that when IME is rebuilt, this window has a context.
             None
@@ -81,23 +96,7 @@ impl Ime {
             ) }?)
         };
         self.inner.contexts.insert(window, context);
-        Ok(())
-    }
-
-    // Destroying a context and removing a context are quite semantically different
-    // even if is_destroyed, we still need to de-list the window
-    pub fn destroy_context(&mut self, window: ffi::Window) -> Result<(), XError> {
-        if self.is_destroyed() {
-            return Ok(());
-        }
-        if let Some(Some(context)) = self.inner.contexts.remove(&window) {
-            unsafe {
-                (self.xconn.xlib.XDestroyIC)(context.ic);
-            }
-            self.xconn.check_errors()
-        } else {
-            Ok(())
-        }
+        Ok(!self.is_destroyed())
     }
 
     pub fn get_context(&self, window: ffi::Window) -> Option<ffi::XIC> {
@@ -111,10 +110,17 @@ impl Ime {
         }
     }
 
-    // For both focus and unfocus:
-    // Ok(_) indicates that nothing went wrong internally
-    // Ok(true) indicates that the action was actually performed
-    // Ok(false) indicates that the action is not presently applicable
+    pub fn remove_context(&mut self, window: ffi::Window) -> Result<bool, XError> {
+        if let Some(Some(context)) = self.inner.contexts.remove(&window) {
+            unsafe {
+                self.inner.destroy_ic_if_necessary(context.ic)?;
+            }
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
     pub fn focus(&mut self, window: ffi::Window) -> Result<bool, XError> {
         if self.is_destroyed() {
             return Ok(false);
@@ -149,16 +155,9 @@ impl Ime {
 
 impl Drop for Ime {
     fn drop(&mut self) {
-        if !self.is_destroyed() {
-            unsafe {
-                for context in self.inner.contexts.values() {
-                    if let &Some(ref context) = context {
-                        (self.xconn.xlib.XDestroyIC)(context.ic);
-                    }
-                }
-                (self.xconn.xlib.XCloseIM)(self.inner.im);
-            }
-            self.xconn.check_errors().expect("Failed to close input method");
+        unsafe {
+            let _ = self.inner.destroy_all_contexts_if_necessary();
+            let _ = self.inner.close_im_if_necessary();
         }
     }
 }

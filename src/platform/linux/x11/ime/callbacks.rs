@@ -1,12 +1,13 @@
-use std::mem;
 use std::ptr;
 use std::sync::Arc;
+use std::collections::HashMap;
 use std::os::raw::c_char;
 
 use super::{ffi, XConnection, XError};
 
-use super::inner::ImeInner;
-use super::context::ImeContext;
+use super::inner::{close_im, ImeInner};
+use super::input_method::PotentialInputMethods;
+use super::context::{ImeContextCreationError, ImeContext};
 
 pub unsafe fn xim_set_callback(
     xconn: &Arc<XConnection>,
@@ -38,29 +39,64 @@ pub unsafe fn set_destroy_callback(
     )
 }
 
+#[derive(Debug)]
+enum ImeRebuildError {
+    MethodOpenFailed(PotentialInputMethods),
+    ContextCreationFailed(ImeContextCreationError),
+    SetDestroyCallbackFailed(XError),
+}
+
 // Attempt to replace current IM (which may or may not be presently valid) with a new one. This
 // includes replacing all existing input contexts and free'ing resources as necessary. This only
 // modifies existing state if all operations succeed.
-// WARNING: at the time of writing, this comment is a bold-faced lie.
-unsafe fn replace_im(inner: *mut ImeInner) {
+unsafe fn replace_im(inner: *mut ImeInner) -> Result<(), ImeRebuildError> {
     let xconn = &(*inner).xconn;
-    let im = (*inner).potential_input_methods.open_im(xconn)
+
+    let new_im = (*inner).potential_input_methods
+        .open_im(xconn)
         .ok()
-        .expect("Failed to reopen input method");
-    println!("IM {:?}", im);
+        .ok_or_else(|| {
+            ImeRebuildError::MethodOpenFailed((*inner).potential_input_methods.clone())
+        })?;
+
+    println!("IM {:?}", new_im);
     println!("(POTENTIAL {:#?})", (*inner).potential_input_methods);
-    (*inner).im = im.im;
-    for (window, old_context) in (*inner).contexts.iter_mut() {
-        let spot = old_context.as_ref().map(|context| context.ic_spot);
-        let new_context = ImeContext::new(
-            xconn,
-            im.im,
-            *window,
-            spot,
-        ).expect("Failed to reinitialize input context");
-        let _ = mem::replace(old_context, Some(new_context));
+
+    // It's important to always set a destroy callback, since there's otherwise potential for us
+    // to try to use or free a resource that's already been destroyed on the server.
+    {
+        let result = set_destroy_callback(xconn, new_im.im, &*inner);
+        if result.is_err() {
+            let _ = close_im(xconn, new_im.im);
+        }
+        result
+    }.map_err(ImeRebuildError::SetDestroyCallbackFailed)?;
+
+    let mut new_contexts = HashMap::new();
+    for (window, old_context) in (*inner).contexts.iter() {
+        let spot = old_context.as_ref().map(|old_context| old_context.ic_spot);
+        let new_context = {
+            let result = ImeContext::new(
+                xconn,
+                new_im.im,
+                *window,
+                spot,
+            );
+            if result.is_err() {
+                let _ = close_im(xconn, new_im.im);
+            }
+            result.map_err(ImeRebuildError::ContextCreationFailed)?
+        };
+        new_contexts.insert(*window, Some(new_context));
     }
+
+    // If we've made it this far, everything succeeded.
+    let _ = (*inner).destroy_all_contexts_if_necessary();
+    let _ = (*inner).close_im_if_necessary();
+    (*inner).im = new_im.im;
+    (*inner).contexts = new_contexts;
     (*inner).destroyed = false;
+    Ok(())
 }
 
 // This callback is triggered when a new input method using the same locale modifiers becomes
@@ -70,11 +106,11 @@ unsafe fn replace_im(inner: *mut ImeInner) {
 pub unsafe extern fn xim_instantiate_callback(
     _display: *mut ffi::Display,
     client_data: ffi::XPointer,
-    // This field is unsupplied
+    // This field is unsupplied.
     _call_data: ffi::XPointer,
 ) {
     let inner: *mut ImeInner = client_data as _;
-    if !client_data.is_null() {
+    if !inner.is_null() {
         let xconn = &(*inner).xconn;
         (xconn.xlib.XUnregisterIMInstantiateCallback)(
             xconn.display,
@@ -84,21 +120,21 @@ pub unsafe extern fn xim_instantiate_callback(
             Some(xim_instantiate_callback),
             client_data,
         );
-        replace_im(inner);
-        // Allow failure if non-destroyed fallback is present
-        // otherwise panic
-        set_destroy_callback(xconn, (*inner).im, &*inner)
-            .expect("Failed to set input method destruction callback");
+        let result = replace_im(inner);
+        if result.is_err() && (*inner).destroyed {
+            // We have no usable input methods!
+            result.expect("Failed to reopen input method");
+        }
     }
 }
 
 // This callback is triggered when the input method is closed on the server end. When this
-// happens, XCloseIM/XDestroyIC doesn't need to be called, as the resources have already been free'd
-// (attempting to do so causes a freeze)
+// happens, XCloseIM/XDestroyIC doesn't need to be called, as the resources have already been
+// free'd (attempting to do so causes our connection to freeze).
 pub unsafe extern fn xim_destroy_callback(
     _xim: ffi::XIM,
     client_data: ffi::XPointer,
-    // This field is unsupplied
+    // This field is unsupplied.
     _call_data: ffi::XPointer,
 ) {
     let inner: *mut ImeInner = client_data as _;
@@ -113,10 +149,11 @@ pub unsafe extern fn xim_destroy_callback(
             Some(xim_instantiate_callback),
             client_data,
         );
-        // Attempt to open fallback input method
-        // The IM+ICs we open here get leaked!
-        replace_im(inner);
-        // This needs to have a destroy callback too to ensure we don't try to free anything we
-        // shouldn't
+        // Attempt to open fallback input method.
+        let result = replace_im(inner);
+        if result.is_err() {
+            // We have no usable input methods!
+            result.expect("Failed to open fallback input method");
+        }
     }
 }

@@ -25,6 +25,7 @@ unsafe fn create_pre_edit_attr<'a>(
     ).expect("XVaCreateNestedList returned NULL")
 }
 
+// WARNING: this struct doesn't destroy its XIC resource when dropped.
 #[derive(Debug)]
 pub struct ImeContext {
     pub ic: ffi::XIC,

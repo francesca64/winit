@@ -2,10 +2,20 @@ use std::mem;
 use std::sync::Arc;
 use std::collections::HashMap;
 
-use super::{ffi, XConnection};
+use super::{ffi, XConnection, XError};
 
 use super::input_method::PotentialInputMethods;
 use super::context::ImeContext;
+
+pub unsafe fn close_im(xconn: &Arc<XConnection>, im: ffi::XIM) -> Result<(), XError> {
+    (xconn.xlib.XCloseIM)(im);
+    xconn.check_errors()
+}
+
+pub unsafe fn destroy_ic(xconn: &Arc<XConnection>, ic: ffi::XIC) -> Result<(), XError> {
+    (xconn.xlib.XDestroyIC)(ic);
+    xconn.check_errors()
+}
 
 pub struct ImeInner {
     pub xconn: Arc<XConnection>,
@@ -33,5 +43,32 @@ impl ImeInner {
             destroy_callback: unsafe { mem::zeroed() },
             destroyed: false,
         }
+    }
+
+    pub unsafe fn close_im_if_necessary(&self) -> Result<bool, XError> {
+        if !self.destroyed {
+            close_im(&self.xconn, self.im).map(|_| true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    pub unsafe fn destroy_ic_if_necessary(&self, ic: ffi::XIC)
+        -> Result<bool, XError>
+    {
+        if !self.destroyed {
+            destroy_ic(&self.xconn, ic).map(|_| true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    pub unsafe fn destroy_all_contexts_if_necessary(&self) -> Result<bool, XError> {
+        for context in self.contexts.values() {
+            if let &Some(ref context) = context {
+                self.destroy_ic_if_necessary(context.ic)?;
+            }
+        }
+        Ok(!self.destroyed)
     }
 }

@@ -144,6 +144,7 @@ impl fmt::Debug for InputMethodName {
 #[derive(Debug, Clone)]
 struct PotentialInputMethod {
     name: InputMethodName,
+    // Option<bool> would be better
     failed: bool,
 }
 

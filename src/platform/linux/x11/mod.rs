@@ -433,7 +433,7 @@ impl EventsLoop {
 
                 self.ime
                     .borrow_mut()
-                    .destroy_context(window)
+                    .remove_context(window)
                     .expect("Failed to destroy input context");
             }
 
