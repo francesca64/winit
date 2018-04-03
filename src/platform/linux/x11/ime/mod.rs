@@ -31,9 +31,6 @@ pub struct Ime {
     inner: Box<ImeInner>,
 }
 
-// if we set a full list of locale modifiers, will we be able to create a local IM that becomes
-// aware of ibus/etc. starting?
-
 impl Ime {
     pub fn new(xconn: Arc<XConnection>) -> Result<Self, ImeCreationError> {
         let potential_input_methods = PotentialInputMethods::new(&xconn);
@@ -59,8 +56,8 @@ impl Ime {
         let input_method = inner.potential_input_methods.open_im(&xconn, Some(&|| {
             let _ = unsafe { set_instantiate_callback(&xconn, client_data) };
         }));
-        println!("IM {:?}", input_method);
-        println!("(POTENTIAL {:#?})", inner.potential_input_methods);
+        println!("{:?}", input_method);
+        println!("{:#?}", inner.potential_input_methods);
 
         let is_fallback = input_method.is_fallback();
         if let Some(input_method) = input_method.ok() {

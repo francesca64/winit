@@ -90,7 +90,7 @@ pub unsafe fn send_client_msg(
     xconn.check_errors().map(|_| ())
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum GetPropertyError {
     XError(XError),
     TypeMismatch(ffi::Atom),

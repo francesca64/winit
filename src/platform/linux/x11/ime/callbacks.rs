@@ -95,8 +95,8 @@ unsafe fn replace_im(inner: *mut ImeInner) -> Result<(), ImeRebuildError> {
             ImeRebuildError::MethodOpenFailed((*inner).potential_input_methods.clone())
         })?;
 
-    println!("IM {:?}", new_im);
-    println!("(POTENTIAL {:#?})", (*inner).potential_input_methods);
+    println!("{:?}", new_im);
+    println!("{:#?}", (*inner).potential_input_methods);
 
     // It's important to always set a destroy callback, since there's otherwise potential for us
     // to try to use or free a resource that's already been destroyed on the server.
