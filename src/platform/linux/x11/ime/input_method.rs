@@ -144,32 +144,31 @@ impl fmt::Debug for InputMethodName {
 #[derive(Debug, Clone)]
 struct PotentialInputMethod {
     name: InputMethodName,
-    // Option<bool> would be better
-    failed: bool,
+    successful: Option<bool>,
 }
 
 impl PotentialInputMethod {
     pub fn from_string(string: String) -> Self {
         PotentialInputMethod {
             name: InputMethodName::from_string(string),
-            failed: false,
+            successful: None,
         }
     }
 
     pub fn from_str(string: &str) -> Self {
         PotentialInputMethod {
             name: InputMethodName::from_str(string),
-            failed: false,
+            successful: None,
         }
     }
 
     pub fn reset(&mut self) {
-        self.failed = false;
+        self.successful = None;
     }
 
     pub fn open_im(&mut self, xconn: &Arc<XConnection>) -> Option<InputMethod> {
         let im = unsafe { open_im(xconn, &self.name.c_string) };
-        self.failed = im.is_none();
+        self.successful = Some(im.is_some());
         im.map(|im| InputMethod::new(im, self.name.string.clone()))
     }
 }
