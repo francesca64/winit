@@ -88,12 +88,16 @@ enum ImeRebuildError {
 unsafe fn replace_im(inner: *mut ImeInner) -> Result<(), ImeRebuildError> {
     let xconn = &(*inner).xconn;
 
-    let new_im = (*inner).potential_input_methods
-        .open_im(xconn, None)
-        .ok()
-        .ok_or_else(|| {
-            ImeRebuildError::MethodOpenFailed((*inner).potential_input_methods.clone())
-        })?;
+    let (new_im, is_fallback) = {
+        let new_im = (*inner).potential_input_methods.open_im(xconn, None);
+        let is_fallback = new_im.is_fallback();
+        (
+            new_im.ok().ok_or_else(|| {
+                ImeRebuildError::MethodOpenFailed((*inner).potential_input_methods.clone())
+            })?,
+            is_fallback,
+        )
+    };
 
     println!("{:?}", new_im);
     println!("{:#?}", (*inner).potential_input_methods);
@@ -131,7 +135,8 @@ unsafe fn replace_im(inner: *mut ImeInner) -> Result<(), ImeRebuildError> {
     let _ = (*inner).close_im_if_necessary();
     (*inner).im = new_im.im;
     (*inner).contexts = new_contexts;
-    (*inner).destroyed = false;
+    (*inner).is_destroyed = false;
+    (*inner).is_fallback = is_fallback;
     Ok(())
 }
 
@@ -149,10 +154,10 @@ pub unsafe extern fn xim_instantiate_callback(
     if !inner.is_null() {
         let xconn = &(*inner).xconn;
         let result = replace_im(inner);
-        let _ = unset_instantiate_callback(xconn, client_data);
         if result.is_ok() {
+            let _ = unset_instantiate_callback(xconn, client_data);
             (*inner).is_fallback = false;
-        } else if result.is_err() && (*inner).destroyed {
+        } else if result.is_err() && (*inner).is_destroyed {
             // We have no usable input methods!
             result.expect("Failed to reopen input method");
         }
@@ -170,7 +175,7 @@ pub unsafe extern fn xim_destroy_callback(
 ) {
     let inner: *mut ImeInner = client_data as _;
     if !inner.is_null() {
-        (*inner).destroyed = true;
+        (*inner).is_destroyed = true;
         let xconn = &(*inner).xconn;
         if !(*inner).is_fallback {
             let _ = set_instantiate_callback(xconn, client_data);

@@ -28,7 +28,7 @@ pub struct ImeInner {
     pub destroy_callback: ffi::XIMCallback,
     // Indicates whether or not the the input method was destroyed on the server end
     // (i.e. if ibus/fcitx/etc. was terminated/restarted)
-    pub destroyed: bool,
+    pub is_destroyed: bool,
     pub is_fallback: bool,
 }
 
@@ -43,13 +43,13 @@ impl ImeInner {
             potential_input_methods,
             contexts: HashMap::new(),
             destroy_callback: unsafe { mem::zeroed() },
-            destroyed: false,
+            is_destroyed: false,
             is_fallback: false,
         }
     }
 
     pub unsafe fn close_im_if_necessary(&self) -> Result<bool, XError> {
-        if !self.destroyed {
+        if !self.is_destroyed {
             close_im(&self.xconn, self.im).map(|_| true)
         } else {
             Ok(false)
@@ -59,7 +59,7 @@ impl ImeInner {
     pub unsafe fn destroy_ic_if_necessary(&self, ic: ffi::XIC)
         -> Result<bool, XError>
     {
-        if !self.destroyed {
+        if !self.is_destroyed {
             destroy_ic(&self.xconn, ic).map(|_| true)
         } else {
             Ok(false)
@@ -72,6 +72,6 @@ impl ImeInner {
                 self.destroy_ic_if_necessary(context.ic)?;
             }
         }
-        Ok(!self.destroyed)
+        Ok(!self.is_destroyed)
     }
 }

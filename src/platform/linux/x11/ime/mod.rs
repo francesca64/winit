@@ -78,7 +78,7 @@ impl Ime {
     }
 
     pub fn is_destroyed(&self) -> bool {
-        self.inner.destroyed
+        self.inner.is_destroyed
     }
 
     // This pattern is used for various methods here:
