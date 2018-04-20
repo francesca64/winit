@@ -55,7 +55,7 @@ pub struct SavedWindowInfo {
     pub style: LONG,
     /// Window ex-style
     pub ex_style: LONG,
-    /// Window position and size    
+    /// Window position and size
     pub rect: RECT,
 }
 
@@ -396,7 +396,7 @@ pub unsafe extern "system" fn callback(window: HWND, msg: UINT,
                 context_stash.as_mut().unwrap().windows.remove(&window);
             });
             winuser::DefWindowProcW(window, msg, wparam, lparam)
-        },       
+        },
 
         winuser::WM_PAINT => {
             use events::WindowEvent::Refresh;
@@ -447,8 +447,10 @@ pub unsafe extern "system" fn callback(window: HWND, msg: UINT,
 
         winuser::WM_MOVE => {
             use events::WindowEvent::Moved;
-            let x = LOWORD(lparam as DWORD) as i32;
-            let y = HIWORD(lparam as DWORD) as i32;
+            // The intermediary i16 cast is essential, as otherwise negative positions will be
+            // interpreted as unreasonably large positive positions.
+            let x = LOWORD(lparam as DWORD) as i16 as i32;
+            let y = HIWORD(lparam as DWORD) as i16 as i32;
             send_event(Event::WindowEvent {
                 window_id: SuperWindowId(WindowId(window)),
                 event: Moved(x, y),
