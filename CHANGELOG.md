@@ -1,5 +1,7 @@
 # Unreleased
 
+- Implemented `Moved` event on macOS.
+
 # Version 0.13.1 (2018-04-26)
 
 - Ensure necessary `x11-dl` version is used.
