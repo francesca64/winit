@@ -14,6 +14,7 @@
 - Corrected `set_position` on macOS to set outer frame position, not content area position.
 - Added `get_inner_position` method to `Window`, which gets the position of the window's client area. This is implemented on all applicable platforms (all desktop platforms other than Wayland, where this isn't possible).
 - Corrected `Moved` event on Windows to not mangle negative positions into very large (in the neighborhood of `i16::MAX`) positions.
+- Corrected `get_position` on Windows to be relative to the screen rather than to the taskbar.
 
 # Version 0.12.0 (2018-04-06)
 

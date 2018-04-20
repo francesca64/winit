@@ -47,14 +47,14 @@ unsafe impl Send for Window {}
 unsafe impl Sync for Window {}
 
 // https://blogs.msdn.microsoft.com/oldnewthing/20131017-00/?p=2903
-// The idea here is that we use the Adjust­Window­Rect­Ex function to calculate how much additional 
-// non-client area gets added due to the styles we passed. To make the math simple, 
-// we ask for a zero client rectangle, so that the resulting window is all non-client. 
-// And then we pass in the empty rectangle represented by the dot in the middle, 
-// and the Adjust­Window­Rect­Ex expands the rectangle in all dimensions. 
-// We see that it added ten pixels to the left, right, and bottom, 
+// The idea here is that we use the Adjust­Window­Rect­Ex function to calculate how much additional
+// non-client area gets added due to the styles we passed. To make the math simple,
+// we ask for a zero client rectangle, so that the resulting window is all non-client.
+// And then we pass in the empty rectangle represented by the dot in the middle,
+// and the Adjust­Window­Rect­Ex expands the rectangle in all dimensions.
+// We see that it added ten pixels to the left, right, and bottom,
 // and it added fifty pixels to the top.
-// From this we can perform the reverse calculation: Instead of expanding the rectangle, we shrink it. 
+// From this we can perform the reverse calculation: Instead of expanding the rectangle, we shrink it.
 unsafe fn unjust_window_rect(prc: &mut RECT, style: DWORD, ex_style: DWORD) -> BOOL {
     let mut rc: RECT = mem::zeroed();
 
@@ -67,7 +67,7 @@ unsafe fn unjust_window_rect(prc: &mut RECT, style: DWORD, ex_style: DWORD) -> B
         prc.right -= rc.right;
         prc.bottom -= rc.bottom;
     }
-    
+
     frc
 }
 
@@ -116,17 +116,13 @@ impl Window {
 
     /// See the docs in the crate root file.
     pub fn get_position(&self) -> Option<(i32, i32)> {
-        use std::mem;
+        let mut rect: RECT = unsafe {mem::uninitialized() };
 
-        let mut placement: winuser::WINDOWPLACEMENT = unsafe { mem::zeroed() };
-        placement.length = mem::size_of::<winuser::WINDOWPLACEMENT>() as UINT;
-
-        if unsafe { winuser::GetWindowPlacement(self.window.0, &mut placement) } == 0 {
-            return None
+        if unsafe { winuser::GetWindowRect(self.window.0, &mut rect) } != 0 {
+            Some((rect.left as i32, rect.top as i32))
+        } else {
+            None
         }
-
-        let ref rect = placement.rcNormalPosition;
-        Some((rect.left as i32, rect.top as i32))
     }
 
     pub fn get_inner_position(&self) -> Option<(i32, i32)> {
@@ -378,13 +374,13 @@ impl Window {
     pub fn set_maximized(&self, maximized: bool) {
         let mut window_state = self.window_state.lock().unwrap();
 
-        window_state.attributes.maximized = maximized;       
+        window_state.attributes.maximized = maximized;
         // we only maximized if we are not in fullscreen
         if window_state.attributes.fullscreen.is_some() {
             return;
         }
-        
-        let window = self.window.clone();        
+
+        let window = self.window.clone();
         unsafe {
             // And because ShowWindow will resize the window
             // We call it in the main thread
@@ -749,7 +745,7 @@ unsafe fn init(window: WindowAttributes, pl_attribs: PlatformSpecificWindowBuild
             winuser::RegisterTouchWindow( real_window.0, winuser::TWF_WANTPALM );
         }
     }
-    
+
     // Creating a mutex to track the current window state
     let window_state = Arc::new(Mutex::new(events_loop::WindowState {
         cursor: winuser::IDC_ARROW, // use arrow by default
@@ -770,7 +766,7 @@ unsafe fn init(window: WindowAttributes, pl_attribs: PlatformSpecificWindowBuild
 
         dwmapi::DwmEnableBlurBehindWindow(real_window.0, &bb);
     }
-    
+
     let win = Window {
         window: real_window,
         window_state: window_state,
@@ -784,7 +780,7 @@ unsafe fn init(window: WindowAttributes, pl_attribs: PlatformSpecificWindowBuild
     }
 
     inserter.insert(win.window.0, win.window_state.clone());
-    
+
     Ok(win)
 }
 
@@ -824,7 +820,7 @@ impl Drop for ComInitialized {
     }
 }
 
-thread_local!{    
+thread_local!{
     static COM_INITIALIZED: ComInitialized = {
         unsafe {
             combaseapi::CoInitializeEx(ptr::null_mut(), COINIT_MULTITHREADED);
@@ -871,7 +867,7 @@ mod taskbar {
         fn MarkFullscreenWindow(
             hwnd: HWND,
             fFullscreen: BOOL,
-        ) -> HRESULT,    
+        ) -> HRESULT,
     });
 }
 

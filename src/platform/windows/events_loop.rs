@@ -451,10 +451,12 @@ pub unsafe extern "system" fn callback(window: HWND, msg: UINT,
             // interpreted as unreasonably large positive positions.
             let x = LOWORD(lparam as DWORD) as i16 as i32;
             let y = HIWORD(lparam as DWORD) as i16 as i32;
+
             send_event(Event::WindowEvent {
                 window_id: SuperWindowId(WindowId(window)),
                 event: Moved(x, y),
             });
+
             0
         },
 
