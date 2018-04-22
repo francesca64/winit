@@ -375,6 +375,16 @@ impl EventsLoop {
             ffi::ConfigureNotify => {
                 let xev: &ffi::XConfigureEvent = xev.as_ref();
 
+                // So apparently...
+                // XSendEvent -> position relative to root
+                // XConfigureNotify -> position relative to parent
+                // https://tronche.com/gui/x/icccm/sec-4.html#s-4.1.5
+                // In practice, this discards an extraneous Moved event after resizing that has a
+                // position relative to the parent window.
+                if xev.send_event == ffi::False {
+                    return;
+                }
+
                 let window = xev.window;
                 let window_id = mkwid(window);
 
@@ -402,12 +412,14 @@ impl EventsLoop {
                         return;
                     }
                 };
+
                 if resized {
                     callback(Event::WindowEvent {
                         window_id,
                         event: WindowEvent::Resized(xev.width as u32, xev.height as u32),
                     });
                 }
+
                 if moved {
                     callback(Event::WindowEvent {
                         window_id,
