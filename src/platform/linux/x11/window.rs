@@ -5,7 +5,8 @@ use libc;
 use std::borrow::Borrow;
 use std::{mem, cmp, ptr};
 use std::sync::{Arc, Mutex};
-use std::os::raw::{c_int, c_long, c_uchar, c_uint, c_ulong, c_void};
+use std::os::raw::{c_char, c_int, c_long, c_uchar, c_uint, c_ulong, c_void};
+use std::ffi::CString;
 use std::thread;
 use std::time::Duration;
 
@@ -20,13 +21,6 @@ use window::MonitorId as RootMonitorId;
 use platform::x11::monitor::get_available_monitors;
 
 use super::{ffi, util, XConnection, XError, WindowId, EventsLoop};
-
-// TODO: remove me
-fn with_c_str<F, T>(s: &str, f: F) -> T where F: FnOnce(*const libc::c_char) -> T {
-    use std::ffi::CString;
-    let c_str = CString::new(s.as_bytes().to_vec()).unwrap();
-    f(c_str.as_ptr())
-}
 
 #[derive(Debug)]
 enum StateOperation {
@@ -65,7 +59,7 @@ impl XWindow {
         let mut root: ffi::Window = mem::uninitialized();
         let mut parent: ffi::Window = mem::uninitialized();
         let mut children: *mut ffi::Window = ptr::null_mut();
-        let mut nchildren: libc::c_uint = mem::uninitialized();
+        let mut nchildren: c_uint = mem::uninitialized();
 
         let res = (self.display.xlib.XQueryTree)(
             self.display.display,
@@ -296,13 +290,13 @@ impl Window2 {
 
         // finally creating the window
         let window = unsafe {
-            let win = (display.xlib.XCreateWindow)(display.display, root, 0, 0, dimensions.0 as libc::c_uint,
-                dimensions.1 as libc::c_uint, 0,
+            let win = (display.xlib.XCreateWindow)(display.display, root, 0, 0, dimensions.0 as c_uint,
+                dimensions.1 as c_uint, 0,
                 match pl_attribs.visual_infos {
                     Some(vi) => vi.depth,
                     None => ffi::CopyFromParent
                 },
-                ffi::InputOutput as libc::c_uint,
+                ffi::InputOutput as c_uint,
                 match pl_attribs.visual_infos {
                     Some(vi) => vi.visual,
                     None => ffi::CopyFromParent as *mut _
@@ -343,33 +337,31 @@ impl Window2 {
 
             // Enable drag and drop
             unsafe {
-                let atom = util::get_atom(display, b"XdndAware\0")
+                let dnd_aware_atom = util::get_atom(display, b"XdndAware\0")
                     .expect("Failed to call XInternAtom (XdndAware)");
-                let version = &5; // Latest version; hasn't changed since 2002
-                (display.xlib.XChangeProperty)(
-                    display.display,
+                let version = &[5 as c_ulong]; // Latest version; hasn't changed since 2002
+                util::change_property(
+                    &display,
                     x_window.window,
-                    atom,
+                    dnd_aware_atom,
                     ffi::XA_ATOM,
-                    32,
-                    ffi::PropModeReplace,
+                    util::Format::Long,
+                    util::PropMode::Replace,
                     version,
-                    1
-                );
-                display.check_errors().expect("Failed to set drag and drop properties");
+                ).expect("Failed to set drag and drop properties");
             }
 
             // Set ICCCM WM_CLASS property based on initial window title
             // Must be done *before* mapping the window by ICCCM 4.1.2.5
             unsafe {
-                with_c_str(&*window_attrs.title, |c_name| {
-                    let hint = (display.xlib.XAllocClassHint)();
-                    (*hint).res_name = c_name as *mut libc::c_char;
-                    (*hint).res_class = c_name as *mut libc::c_char;
-                    (display.xlib.XSetClassHint)(display.display, x_window.window, hint);
-                    display.check_errors().expect("Failed to call XSetClassHint");
-                    (display.xlib.XFree)(hint as *mut _);
-                });
+                let name = CString::new(window_attrs.title.as_str())
+                    .expect("Window title contained null byte");
+                let hint = (display.xlib.XAllocClassHint)();
+                (*hint).res_name = name.as_ptr() as *mut c_char;
+                (*hint).res_class = name.as_ptr() as *mut c_char;
+                (display.xlib.XSetClassHint)(display.display, x_window.window, hint);
+                display.check_errors().expect("Failed to call XSetClassHint");
+                (display.xlib.XFree)(hint as *mut _);
             }
 
             // set size hints
@@ -577,7 +569,7 @@ impl Window2 {
             self.x.window,
             self.x.root,
             (horz_atom as c_long, vert_atom as c_long, 0, 0),
-            maximized.into()
+            maximized.into(),
         );
     }
 
@@ -597,27 +589,29 @@ impl Window2 {
     }
 
     pub fn set_title(&self, title: &str) {
-        let wm_name = unsafe {
-            (self.x.display.xlib.XInternAtom)(self.x.display.display, b"_NET_WM_NAME\0".as_ptr() as *const _, 0)
-        };
-        self.x.display.check_errors().expect("Failed to call XInternAtom");
+        let wm_name_atom = unsafe { util::get_atom(&self.x.display, b"_NET_WM_NAME\0") }
+            .expect("Failed to call XInternAtom (_NET_WM_NAME)");
+        let utf8_atom = unsafe { util::get_atom(&self.x.display, b"UTF8_STRING\0") }
+            .expect("Failed to call XInternAtom (UTF8_STRING)");
 
-        let wm_utf8_string = unsafe {
-            (self.x.display.xlib.XInternAtom)(self.x.display.display, b"UTF8_STRING\0".as_ptr() as *const _, 0)
-        };
-        self.x.display.check_errors().expect("Failed to call XInternAtom");
+        let title = CString::new(title).expect("Window title contained null byte");
+        unsafe {
+            (self.x.display.xlib.XStoreName)(
+                self.x.display.display,
+                self.x.window,
+                title.as_ptr() as *const c_char,
+            );
 
-        with_c_str(title, |c_title| unsafe {
-            (self.x.display.xlib.XStoreName)(self.x.display.display, self.x.window, c_title);
-
-            let len = title.as_bytes().len();
-            (self.x.display.xlib.XChangeProperty)(self.x.display.display, self.x.window,
-                                            wm_name, wm_utf8_string, 8, ffi::PropModeReplace,
-                                            c_title as *const u8, len as libc::c_int);
-            (self.x.display.xlib.XFlush)(self.x.display.display);
-        });
-        self.x.display.check_errors().expect("Failed to set window title");
-
+            util::change_property(
+                &self.x.display,
+                self.x.window,
+                wm_name_atom,
+                utf8_atom,
+                util::Format::Char,
+                util::PropMode::Replace,
+                title.as_bytes_with_nul(),
+            )
+        }.expect("Failed to set window title");
     }
 
     pub fn set_decorations(&self, decorations: bool) {
@@ -958,7 +952,7 @@ impl Window2 {
 
     #[inline]
     pub fn set_inner_size(&self, x: u32, y: u32) {
-        unsafe { (self.x.display.xlib.XResizeWindow)(self.x.display.display, self.x.window, x as libc::c_uint, y as libc::c_uint); }
+        unsafe { (self.x.display.xlib.XResizeWindow)(self.x.display.display, self.x.window, x as c_uint, y as c_uint); }
         self.x.display.check_errors().expect("Failed to call XResizeWindow");
     }
 
@@ -1225,7 +1219,7 @@ impl Window2 {
                         ffi::LeaveWindowMask | ffi::PointerMotionMask | ffi::PointerMotionHintMask |
                         ffi::Button1MotionMask | ffi::Button2MotionMask | ffi::Button3MotionMask |
                         ffi::Button4MotionMask | ffi::Button5MotionMask | ffi::ButtonMotionMask |
-                        ffi::KeymapStateMask) as libc::c_uint,
+                        ffi::KeymapStateMask) as c_uint,
                         ffi::GrabModeAsync, ffi::GrabModeAsync,
                         self.x.window, 0, ffi::CurrentTime
                     ) {

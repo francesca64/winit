@@ -8,6 +8,41 @@ use std::os::raw::{c_char, c_double, c_int, c_long, c_short, c_uchar, c_uint, c_
 use super::{ffi, XConnection, XError};
 use events::ModifiersState;
 
+// This isn't actually the number of the bits in the format.
+// X11 does a match on this value to determine which type to call sizeof on.
+// Thus, we use 32 for c_long, since 32 maps to c_long which maps to 64.
+// ...if that sounds confusing, then you know why this enum is here.
+#[derive(Debug, Copy, Clone)]
+pub enum Format {
+    Char = 8,
+    #[allow(dead_code)]
+    Short = 16,
+    Long = 32,
+}
+
+impl Format {
+    pub fn new(format: usize) -> Option<Self> {
+        match format {
+            8 => Some(Format::Char),
+            16 => Some(Format::Short),
+            32 => Some(Format::Long),
+            _ => None,
+        }
+    }
+
+    pub fn is_same_size_as<T>(&self) -> bool {
+        mem::size_of::<T>() == self.get_actual_size()
+    }
+
+    pub fn get_actual_size(&self) -> usize {
+        match self {
+            Format::Char => mem::size_of::<c_char>(),
+            Format::Short => mem::size_of::<c_short>(),
+            Format::Long => mem::size_of::<c_long>(),
+        }
+    }
+}
+
 pub struct XSmartPointer<'a, T> {
     xconn: &'a Arc<XConnection>,
     pub ptr: *mut T,
@@ -69,7 +104,7 @@ pub unsafe fn send_client_msg(
     event.display = xconn.display;
     event.window = window;
     event.message_type = message_type;
-    event.format = 32;
+    event.format = Format::Long as c_int;
     event.data = ffi::ClientMessageData::new();
     event.data.set_long(0, data.0);
     event.data.set_long(1, data.1);
@@ -146,13 +181,10 @@ pub unsafe fn get_property<T>(
             return Err(GetPropertyError::TypeMismatch(actual_type));
         }
 
-        // Fun fact: actual_format ISN'T the size of the type; it's more like a really bad enum
-        let format_mismatch = match actual_format as usize {
-            8 => mem::size_of::<T>() != mem::size_of::<c_char>(),
-            16 => mem::size_of::<T>() != mem::size_of::<c_short>(),
-            32 => mem::size_of::<T>() != mem::size_of::<c_long>(),
-            _ => true, // this won't actually be reached; the XError condition above is triggered
-        };
+        let format_mismatch = Format::new(actual_format as _)
+            .map(|actual_format| !actual_format.is_same_size_as::<T>())
+            // this won't actually be reached; the XError condition above is triggered
+            .unwrap_or(true);
 
         if format_mismatch {
             return Err(GetPropertyError::FormatMismatch(actual_format));
@@ -170,6 +202,60 @@ pub unsafe fn get_property<T>(
     }
 
     Ok(data)
+}
+
+#[derive(Debug)]
+pub enum PropMode {
+    Replace = ffi::PropModeReplace as isize,
+    #[allow(dead_code)]
+    Prepend = ffi::PropModePrepend as isize,
+    #[allow(dead_code)]
+    Append = ffi::PropModeAppend as isize,
+}
+
+#[derive(Debug, Clone)]
+pub enum ChangePropertyError {
+    XError(XError),
+    FormatError {
+        format_used: Format,
+        size_passed: usize,
+        size_expected: usize,
+    },
+}
+
+pub unsafe fn change_property<T>(
+    xconn: &Arc<XConnection>,
+    window: c_ulong,
+    property: ffi::Atom,
+    property_type: ffi::Atom,
+    format: Format,
+    mode: PropMode,
+    new_value: &[T],
+) -> Result<(), ChangePropertyError> {
+    if !format.is_same_size_as::<T>() {
+        return Err(ChangePropertyError::FormatError {
+            format_used: format,
+            size_passed: mem::size_of::<T>() * 8,
+            size_expected: format.get_actual_size() * 8,
+        });
+    }
+
+    (xconn.xlib.XChangeProperty)(
+        xconn.display,
+        window,
+        property,
+        property_type,
+        format as c_int,
+        mode as c_int,
+        new_value.as_ptr() as *const c_uchar,
+        new_value.len() as c_int,
+    );
+
+    if let Err(e) = xconn.check_errors() {
+        Err(ChangePropertyError::XError(e))
+    } else {
+        Ok(())
+    }
 }
 
 impl From<ffi::XIModifierState> for ModifiersState {
