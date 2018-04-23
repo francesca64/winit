@@ -21,7 +21,7 @@ pub enum Format {
 }
 
 impl Format {
-    pub fn new(format: usize) -> Option<Self> {
+    pub fn from_format(format: usize) -> Option<Self> {
         match format {
             8 => Some(Format::Char),
             16 => Some(Format::Short),
@@ -143,6 +143,10 @@ impl GetPropertyError {
     }
 }
 
+// Number of 32-bit chunks to retrieve per interation of get_property's inner loop.
+// To test if get_property works correctly, set this to 1.
+const PROPERTY_BUFFER_SIZE: c_long = 1024; // 4K of RAM ought to be enough for anyone!
+
 pub unsafe fn get_property<T>(
     xconn: &Arc<XConnection>,
     window: c_ulong,
@@ -150,27 +154,40 @@ pub unsafe fn get_property<T>(
     property_type: ffi::Atom,
 ) -> Result<Vec<T>, GetPropertyError> {
     let mut data = Vec::new();
+    let mut offset = 0;
 
     let mut done = false;
     while !done {
         let mut actual_type: ffi::Atom = mem::uninitialized();
         let mut actual_format: c_int = mem::uninitialized();
-        let mut byte_count: c_ulong = mem::uninitialized();
+        let mut quantity_returned: c_ulong = mem::uninitialized();
         let mut bytes_after: c_ulong = mem::uninitialized();
         let mut buf: *mut c_uchar = ptr::null_mut();
         (xconn.xlib.XGetWindowProperty)(
             xconn.display,
             window,
             property,
-            (data.len() / 4) as c_long,
-            1024,
+            // This offset is in terms of 32-bit chunks.
+            offset,
+            // This is the quanity of 32-bit chunks to receive at once.
+            PROPERTY_BUFFER_SIZE,
             ffi::False,
             property_type,
             &mut actual_type,
             &mut actual_format,
-            &mut byte_count,
+            // This is the quantity of items we retrieved in our format, NOT of 32-bit chunks!
+            &mut quantity_returned,
+            // ...and this is a quantity of bytes. So, this function deals in 3 different units.
             &mut bytes_after,
             &mut buf,
+        );
+
+        println!(
+            "GET_PROPERTY fmt:{:02} len:{:02} off:{:02} out:{:02}",
+            mem::size_of::<T>() * 8,
+            data.len(),
+            offset,
+            quantity_returned,
         );
 
         if let Err(e) = xconn.check_errors() {
@@ -181,7 +198,7 @@ pub unsafe fn get_property<T>(
             return Err(GetPropertyError::TypeMismatch(actual_type));
         }
 
-        let format_mismatch = Format::new(actual_format as _)
+        let format_mismatch = Format::from_format(actual_format as _)
             .map(|actual_format| !actual_format.is_same_size_as::<T>())
             // this won't actually be reached; the XError condition above is triggered
             .unwrap_or(true);
@@ -191,8 +208,12 @@ pub unsafe fn get_property<T>(
         }
 
         if !buf.is_null() {
-            let mut buf =
-                Vec::from_raw_parts(buf as *mut T, byte_count as usize, byte_count as usize);
+            offset += PROPERTY_BUFFER_SIZE;
+            let mut buf = Vec::from_raw_parts(
+                buf as *mut T,
+                quantity_returned as usize,
+                quantity_returned as usize,
+            );
             data.append(&mut buf);
         } else {
             return Err(GetPropertyError::NothingAllocated);
