@@ -145,14 +145,16 @@ pub unsafe extern fn xim_instantiate_callback(
 ) {
     let inner: *mut ImeInner = client_data as _;
     if !inner.is_null() {
-        let xconn = &(*inner).xconn;
-        let result = replace_im(inner);
-        if result.is_ok() {
-            let _ = unset_instantiate_callback(xconn, client_data);
-            (*inner).is_fallback = false;
-        } else if result.is_err() && (*inner).is_destroyed {
-            // We have no usable input methods!
-            result.expect("Failed to reopen input method");
+        if (*inner).is_destroyed || (*inner).is_fallback {
+            let xconn = &(*inner).xconn;
+            let result = replace_im(inner);
+            if result.is_ok() {
+                let _ = unset_instantiate_callback(xconn, client_data);
+                (*inner).is_fallback = false;
+            } else if result.is_err() && (*inner).is_destroyed {
+                // We have no usable input methods!
+                result.expect("Failed to reopen input method");
+            }
         }
     }
 }
