@@ -12,7 +12,7 @@ use {CreationError, Event, EventsLoopClosed, WindowEvent, DeviceEvent,
 use events::ModifiersState;
 
 use std::{mem, ptr, slice};
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Weak, Mutex};
 use std::sync::atomic::{self, AtomicBool};
 use std::sync::mpsc;
 use std::cell::RefCell;
@@ -48,7 +48,9 @@ pub struct EventsLoop {
     ime_sender: ImeSender,
     ime: RefCell<Ime>,
     windows: Arc<Mutex<HashMap<WindowId, WindowData>>>,
-    devices: Mutex<HashMap<DeviceId, Device>>,
+    // Please don't laugh at this type signature
+    shared_state: RefCell<HashMap<WindowId, Arc<Mutex<window::SharedState>>>>,
+    devices: RefCell<HashMap<DeviceId, Device>>,
     xi2ext: XExtension,
     pending_wakeup: Arc<AtomicBool>,
     root: ffi::Window,
@@ -66,8 +68,8 @@ pub struct EventsLoopProxy {
 
 impl EventsLoop {
     pub fn new(display: Arc<XConnection>) -> EventsLoop {
-        let wm_delete_window = unsafe { (display.xlib.XInternAtom)(display.display, b"WM_DELETE_WINDOW\0".as_ptr() as *const c_char, 0) };
-        display.check_errors().expect("Failed to call XInternAtom");
+        let wm_delete_window = unsafe { util::get_atom(&display, b"WM_DELETE_WINDOW\0") }
+            .expect("Failed to call XInternAtom (WM_DELETE_WINDOW)");
 
         let dnd = Dnd::new(Arc::clone(&display))
             .expect("Failed to call XInternAtoms when initializing drag and drop");
@@ -112,6 +114,7 @@ impl EventsLoop {
         }
 
         let root = unsafe { (display.xlib.XDefaultRootWindow)(display.display) };
+        util::update_cached_wm_info(&display, root);
 
         let wakeup_dummy_window = unsafe {
             let (x, y, w, h) = (10, 10, 10, 10);
@@ -129,27 +132,24 @@ impl EventsLoop {
             ime_sender,
             ime,
             windows: Arc::new(Mutex::new(HashMap::new())),
-            devices: Mutex::new(HashMap::new()),
+            shared_state: RefCell::new(HashMap::new()),
+            devices: RefCell::new(HashMap::new()),
             xi2ext,
             root,
             wakeup_dummy_window,
         };
 
-        {
-            // Register for device hotplug events
-            let mask = ffi::XI_HierarchyChangedMask;
-            unsafe {
-                let mut event_mask = ffi::XIEventMask{
-                    deviceid: ffi::XIAllDevices,
-                    mask: &mask as *const _ as *mut c_uchar,
-                    mask_len: mem::size_of_val(&mask) as c_int,
-                };
-                (result.display.xinput2.XISelectEvents)(result.display.display, root,
-                                                 &mut event_mask as *mut ffi::XIEventMask, 1);
-            }
+        // Register for device hotplug events
+        unsafe {
+            util::select_xinput_events(
+                &result.display,
+                root,
+                ffi::XIAllDevices,
+                ffi::XI_HierarchyChangedMask
+            )
+        }.expect("Failed to register for hotplug events");
 
-            result.init_device(ffi::XIAllDevices);
-        }
+        result.init_device(ffi::XIAllDevices);
 
         result
     }
@@ -402,7 +402,9 @@ impl EventsLoop {
                             (if window_state.size != new_size {
                                 window_state.size = new_size;
                                 true
-                            } else { false },
+                            } else {
+                                false
+                            },
                             if window_state.position != new_position {
                                 window_state.position = new_position;
                                 true
@@ -421,11 +423,55 @@ impl EventsLoop {
                 }
 
                 if moved {
-                    callback(Event::WindowEvent {
-                        window_id,
-                        event: WindowEvent::Moved(xev.x as i32, xev.y as i32),
-                    });
+                    let outer_position = self.shared_state
+                        .borrow()
+                        .get(&WindowId(window))
+                        .map(|shared_state| {
+                            let (inner_x, inner_y) = (xev.x as i32, xev.y as i32);
+                            let mut shared_state_lock = shared_state.lock().unwrap();
+                            if (*shared_state_lock).frame_extents.is_some() {
+                                (*shared_state_lock).frame_extents
+                                    .as_ref()
+                                    .unwrap()
+                                    .inner_pos_to_outer(inner_x, inner_y)
+                            } else {
+                                let extents = util::get_frame_extents_heuristic(
+                                    &self.display,
+                                    window,
+                                    self.root,
+                                );
+                                let outer_pos = extents.inner_pos_to_outer(inner_x, inner_y);
+                                (*shared_state_lock).frame_extents = Some(extents);
+                                outer_pos
+                            }
+                        });
+                    if let Some((x, y)) = outer_position {
+                        callback(Event::WindowEvent {
+                            window_id,
+                            event: WindowEvent::Moved(x, y),
+                        });
+                    }
                 }
+            }
+
+            ffi::ReparentNotify => {
+                let xev: &ffi::XReparentEvent = xev.as_ref();
+
+                let window = xev.window;
+
+                // This is generally a reliable way to detect when the window manager's been
+                // replaced, though this event is only fired by reparenting window managers
+                // (which is almost all of them). Failing to correctly update WM info doesn't
+                // really have much impact, since on the WMs affected (xmonad, dwm, etc.) the only
+                // effect is that we waste some time trying to query unsupported properties.
+                util::update_cached_wm_info(&self.display, self.root);
+
+                self.shared_state
+                    .borrow()
+                    .get(&WindowId(window))
+                    .map(|shared_state| {
+                        (*shared_state.lock().unwrap()).frame_extents.take();
+                    });
             }
 
             ffi::DestroyNotify => {
@@ -662,7 +708,7 @@ impl EventsLoop {
                         let mut events = Vec::new();
                         {
                             let mask = unsafe { slice::from_raw_parts(xev.valuators.mask, xev.valuators.mask_len as usize) };
-                            let mut devices = self.devices.lock().unwrap();
+                            let mut devices = self.devices.borrow_mut();
                             let physical_device = devices.get_mut(&DeviceId(xev.sourceid)).unwrap();
 
                             let mut value = xev.valuators.values;
@@ -710,7 +756,7 @@ impl EventsLoop {
                         let window_id = mkwid(xev.event);
                         let device_id = mkdid(xev.deviceid);
 
-                        let mut devices = self.devices.lock().unwrap();
+                        let mut devices = self.devices.borrow_mut();
                         let physical_device = devices.get_mut(&DeviceId(xev.sourceid)).unwrap();
                         for info in DeviceInfo::get(&self.display, ffi::XIAllDevices).iter() {
                             if info.deviceid == xev.sourceid {
@@ -903,7 +949,7 @@ impl EventsLoop {
                                 callback(Event::DeviceEvent { device_id: mkdid(info.deviceid), event: DeviceEvent::Added });
                             } else if 0 != info.flags & (ffi::XISlaveRemoved | ffi::XIMasterRemoved) {
                                 callback(Event::DeviceEvent { device_id: mkdid(info.deviceid), event: DeviceEvent::Removed });
-                                let mut devices = self.devices.lock().unwrap();
+                                let mut devices = self.devices.borrow_mut();
                                 devices.remove(&DeviceId(info.deviceid));
                             }
                         }
@@ -925,7 +971,7 @@ impl EventsLoop {
     }
 
     fn init_device(&self, device: c_int) {
-        let mut devices = self.devices.lock().unwrap();
+        let mut devices = self.devices.borrow_mut();
         for info in DeviceInfo::get(&self.display, device).iter() {
             devices.insert(DeviceId(info.deviceid), Device::new(&self, info));
         }
@@ -1032,7 +1078,11 @@ impl Window {
         window: &::WindowAttributes,
         pl_attribs: &PlatformSpecificWindowBuilderAttributes
     ) -> Result<Self, CreationError> {
-        let win = Arc::new(try!(Window2::new(&x_events_loop, window, pl_attribs)));
+        let win = Arc::new(Window2::new(&x_events_loop, window, pl_attribs)?);
+
+        x_events_loop.shared_state
+            .borrow_mut()
+            .insert(win.id(), Arc::clone(&win.shared_state));
 
         x_events_loop.ime
             .borrow_mut()

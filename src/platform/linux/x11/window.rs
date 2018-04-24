@@ -3,9 +3,9 @@ use CreationError;
 use CreationError::OsError;
 use libc;
 use std::borrow::Borrow;
-use std::{mem, cmp, ptr};
+use std::{mem, cmp};
 use std::sync::{Arc, Mutex};
-use std::os::raw::{c_char, c_int, c_long, c_uchar, c_uint, c_ulong, c_void};
+use std::os::raw::*;
 use std::ffi::CString;
 use std::thread;
 use std::time::Duration;
@@ -22,65 +22,11 @@ use platform::x11::monitor::get_available_monitors;
 
 use super::{ffi, util, XConnection, XError, WindowId, EventsLoop};
 
-#[derive(Debug)]
-enum StateOperation {
-    Remove = 0, // _NET_WM_STATE_REMOVE
-    Add = 1, // _NET_WM_STATE_ADD
-    #[allow(dead_code)]
-    Toggle = 2, // _NET_WM_STATE_TOGGLE
-}
-
-impl From<bool> for StateOperation {
-    fn from(b: bool) -> Self {
-        if b {
-            StateOperation::Add
-        } else {
-            StateOperation::Remove
-        }
-    }
-}
-
 pub struct XWindow {
-    display: Arc<XConnection>,
-    window: ffi::Window,
-    root: ffi::Window,
-    screen_id: i32,
-}
-
-impl XWindow {
-    /// Get parent window of `child`
-    ///
-    /// This method can return None if underlying xlib call fails.
-    ///
-    /// # Unsafety
-    ///
-    /// `child` must be a valid `Window`.
-    unsafe fn get_parent_window(&self, child: ffi::Window) -> Option<ffi::Window> {
-        let mut root: ffi::Window = mem::uninitialized();
-        let mut parent: ffi::Window = mem::uninitialized();
-        let mut children: *mut ffi::Window = ptr::null_mut();
-        let mut nchildren: c_uint = mem::uninitialized();
-
-        let res = (self.display.xlib.XQueryTree)(
-            self.display.display,
-            child,
-            &mut root,
-            &mut parent,
-            &mut children,
-            &mut nchildren
-        );
-
-        if res == 0 {
-            return None;
-        }
-
-        // The list of children isn't used
-        if children != ptr::null_mut() {
-            (self.display.xlib.XFree)(children as *mut _);
-        }
-
-        Some(parent)
-    }
+    pub display: Arc<XConnection>,
+    pub window: ffi::Window,
+    pub root: ffi::Window,
+    pub screen_id: i32,
 }
 
 unsafe impl Send for XWindow {}
@@ -89,152 +35,34 @@ unsafe impl Sync for XWindow {}
 unsafe impl Send for Window2 {}
 unsafe impl Sync for Window2 {}
 
+#[derive(Debug)]
+pub struct SharedState {
+    pub frame_extents: Option<util::FrameExtentsHeuristic>,
+}
+
+impl SharedState {
+    fn new() -> Self {
+        SharedState {
+            frame_extents: None,
+        }
+    }
+}
+
 pub struct Window2 {
     pub x: Arc<XWindow>,
     cursor: Mutex<MouseCursor>,
     cursor_state: Mutex<CursorState>,
-    supported_hints: Vec<ffi::Atom>,
-    wm_name: Option<String>,
-}
-
-fn get_supported_hints(xwin: &Arc<XWindow>) -> Vec<ffi::Atom> {
-    let supported_atom = unsafe { util::get_atom(&xwin.display, b"_NET_SUPPORTED\0") }
-        .expect("Failed to call XInternAtom (_NET_SUPPORTED)");
-    unsafe {
-        util::get_property(
-            &xwin.display,
-            xwin.root,
-            supported_atom,
-            ffi::XA_ATOM,
-        )
-    }.unwrap_or_else(|_| Vec::with_capacity(0))
-}
-
-fn get_wm_name(xwin: &Arc<XWindow>, _supported_hints: &[ffi::Atom]) -> Option<String> {
-    let check_atom = unsafe { util::get_atom(&xwin.display, b"_NET_SUPPORTING_WM_CHECK\0") }
-        .expect("Failed to call XInternAtom (_NET_SUPPORTING_WM_CHECK)");
-    let wm_name_atom = unsafe { util::get_atom(&xwin.display, b"_NET_WM_NAME\0") }
-        .expect("Failed to call XInternAtom (_NET_WM_NAME)");
-
-    // Mutter/Muffin/Budgie doesn't have _NET_SUPPORTING_WM_CHECK in its _NET_SUPPORTED, despite
-    // it working and being supported. This has been reported upstream, but due to the
-    // inavailability of time machines, we'll just try to get _NET_SUPPORTING_WM_CHECK
-    // regardless of whether or not the WM claims to support it.
-    //
-    // Blackbox 0.70 also incorrectly reports not supporting this, though that appears to be fixed
-    // in 0.72.
-    /*if !supported_hints.contains(&check_atom) {
-        return None;
-    }*/
-
-    // IceWM (1.3.x and earlier) doesn't report supporting _NET_WM_NAME, but will nonetheless
-    // provide us with a value for it. Note that the unofficial 1.4 fork of IceWM works fine.
-    /*if !supported_hints.contains(&wm_name_atom) {
-        return None;
-    }*/
-
-    // Of the WMs tested, only xmonad and dwm fail to provide a WM name.
-
-    // Querying this property on the root window will give us the ID of a child window created by
-    // the WM.
-    let root_window_wm_check = {
-        let result = unsafe {
-            util::get_property(
-                &xwin.display,
-                xwin.root,
-                check_atom,
-                ffi::XA_WINDOW,
-            )
-        };
-
-        let wm_check = result
-            .ok()
-            .and_then(|wm_check| wm_check.get(0).cloned());
-
-        if let Some(wm_check) = wm_check {
-            wm_check
-        } else {
-            return None;
-        }
-    };
-
-    // Querying the same property on the child window we were given, we should get this child
-    // window's ID again.
-    let child_window_wm_check = {
-        let result = unsafe {
-            util::get_property(
-                &xwin.display,
-                root_window_wm_check,
-                check_atom,
-                ffi::XA_WINDOW,
-            )
-        };
-
-        let wm_check = result
-            .ok()
-            .and_then(|wm_check| wm_check.get(0).cloned());
-
-        if let Some(wm_check) = wm_check {
-            wm_check
-        } else {
-            return None;
-        }
-    };
-
-    // These values should be the same.
-    if root_window_wm_check != child_window_wm_check {
-        return None;
-    }
-
-    // All of that work gives us a window ID that we can get the WM name from.
-    let wm_name = {
-        let utf8_string_atom = unsafe { util::get_atom(&xwin.display, b"UTF8_STRING\0") }
-            .unwrap_or(ffi::XA_STRING);
-
-        let result = unsafe {
-            util::get_property(
-                &xwin.display,
-                root_window_wm_check,
-                wm_name_atom,
-                utf8_string_atom,
-            )
-        };
-
-        // IceWM requires this. IceWM was also the only WM tested that returns a null-terminated
-        // string. For more fun trivia, IceWM is also unique in including version and uname
-        // information in this string (this means you'll have to be careful if you want to match
-        // against it, though).
-        // The unofficial 1.4 fork of IceWM still includes the extra details, but properly
-        // returns a UTF8 string that isn't null-terminated.
-        let no_utf8 = if let Err(ref err) = result {
-            err.is_actual_property_type(ffi::XA_STRING)
-        } else {
-            false
-        };
-
-        if no_utf8 {
-            unsafe {
-                util::get_property(
-                    &xwin.display,
-                    root_window_wm_check,
-                    wm_name_atom,
-                    ffi::XA_STRING,
-                )
-            }
-        } else {
-            result
-        }
-    }.ok();
-
-    wm_name.and_then(|wm_name| String::from_utf8(wm_name).ok())
+    pub shared_state: Arc<Mutex<SharedState>>,
 }
 
 impl Window2 {
-    pub fn new(ctx: &EventsLoop, window_attrs: &WindowAttributes,
-               pl_attribs: &PlatformSpecificWindowBuilderAttributes)
-               -> Result<Window2, CreationError>
-    {
+    pub fn new(
+        ctx: &EventsLoop,
+        window_attrs: &WindowAttributes,
+        pl_attribs: &PlatformSpecificWindowBuilderAttributes,
+    ) -> Result<Window2, CreationError> {
         let display = &ctx.display;
+
         let dimensions = {
 
             // x11 only applies constraints when the window is actively resized
@@ -308,23 +136,17 @@ impl Window2 {
         };
 
         let x_window = Arc::new(XWindow {
-            display: display.clone(),
+            display: Arc::clone(display),
             window,
             root,
             screen_id,
         });
 
-        // These values will cease to be correct if the user replaces the WM during the life of
-        // the window, so hopefully they don't do that.
-        let supported_hints = get_supported_hints(&x_window);
-        let wm_name = get_wm_name(&x_window, &supported_hints);
-
         let window = Window2 {
             x: x_window,
             cursor: Mutex::new(MouseCursor::Default),
             cursor_state: Mutex::new(CursorState::Normal),
-            supported_hints,
-            wm_name,
+            shared_state: Arc::new(Mutex::new(SharedState::new())),
         };
 
         // Title must be set before mapping, lest some tiling window managers briefly pick up on
@@ -348,20 +170,28 @@ impl Window2 {
                     util::Format::Long,
                     util::PropMode::Replace,
                     version,
-                ).expect("Failed to set drag and drop properties");
+                ).expect("Failed to announce drag and drop awareness");
             }
 
             // Set ICCCM WM_CLASS property based on initial window title
             // Must be done *before* mapping the window by ICCCM 4.1.2.5
-            unsafe {
+            {
                 let name = CString::new(window_attrs.title.as_str())
                     .expect("Window title contained null byte");
-                let hint = (display.xlib.XAllocClassHint)();
-                (*hint).res_name = name.as_ptr() as *mut c_char;
-                (*hint).res_class = name.as_ptr() as *mut c_char;
-                (display.xlib.XSetClassHint)(display.display, x_window.window, hint);
+                let mut class_hints = {
+                    let class_hints = unsafe { (display.xlib.XAllocClassHint)() };
+                    util::XSmartPointer::new(&display, class_hints)
+                }.expect("XAllocClassHint returned null; out of memory");
+                (*class_hints).res_name = name.as_ptr() as *mut c_char;
+                (*class_hints).res_class = name.as_ptr() as *mut c_char;
+                unsafe {
+                    (display.xlib.XSetClassHint)(
+                        display.display,
+                        x_window.window,
+                        class_hints.ptr,
+                    );
+                }
                 display.check_errors().expect("Failed to call XSetClassHint");
-                (display.xlib.XFree)(hint as *mut _);
             }
 
             // set size hints
@@ -369,8 +199,7 @@ impl Window2 {
                 let mut size_hints = {
                     let size_hints = unsafe { (display.xlib.XAllocSizeHints)() };
                     util::XSmartPointer::new(&display, size_hints)
-                        .expect("XAllocSizeHints returned null; out of memory")
-                };
+                }.expect("XAllocSizeHints returned null; out of memory");
                 (*size_hints).flags = ffi::PSize;
                 (*size_hints).width = dimensions.0 as c_int;
                 (*size_hints).height = dimensions.1 as c_int;
@@ -398,17 +227,13 @@ impl Window2 {
             unsafe {
                 (display.xlib.XSetWMProtocols)(display.display, x_window.window, &ctx.wm_delete_window as *const _ as *mut _, 1);
                 display.check_errors().expect("Failed to call XSetWMProtocols");
-                (display.xlib.XFlush)(display.display);
-                display.check_errors().expect("Failed to call XFlush");
             }
 
             // Set visibility (map window)
             if window_attrs.visible {
                 unsafe {
                     (display.xlib.XMapRaised)(display.display, x_window.window);
-                    (display.xlib.XFlush)(display.display);
                 }
-
                 display.check_errors().expect("Failed to set window visibility");
             }
 
@@ -422,23 +247,31 @@ impl Window2 {
             }
 
             // Select XInput2 events
-            {
-                let mask = ffi::XI_MotionMask
-                    | ffi::XI_ButtonPressMask | ffi::XI_ButtonReleaseMask
-                    // | ffi::XI_KeyPressMask | ffi::XI_KeyReleaseMask
-                    | ffi::XI_EnterMask | ffi::XI_LeaveMask
-                    | ffi::XI_FocusInMask | ffi::XI_FocusOutMask
-                    | if window_attrs.multitouch { ffi::XI_TouchBeginMask | ffi::XI_TouchUpdateMask | ffi::XI_TouchEndMask } else { 0 };
-                unsafe {
-                    let mut event_mask = ffi::XIEventMask{
-                        deviceid: ffi::XIAllMasterDevices,
-                        mask: mem::transmute::<*const i32, *mut c_uchar>(&mask as *const i32),
-                        mask_len: mem::size_of_val(&mask) as c_int,
-                    };
-                    (display.xinput2.XISelectEvents)(display.display, x_window.window,
-                                                     &mut event_mask as *mut ffi::XIEventMask, 1);
-                };
-            }
+            let mask = {
+                let mut mask = ffi::XI_MotionMask
+                    | ffi::XI_ButtonPressMask
+                    | ffi::XI_ButtonReleaseMask
+                    //| ffi::XI_KeyPressMask
+                    //| ffi::XI_KeyReleaseMask
+                    | ffi::XI_EnterMask
+                    | ffi::XI_LeaveMask
+                    | ffi::XI_FocusInMask
+                    | ffi::XI_FocusOutMask;
+                if window_attrs.multitouch {
+                    mask |= ffi::XI_TouchBeginMask
+                        | ffi::XI_TouchUpdateMask
+                        | ffi::XI_TouchEndMask;
+                }
+                mask
+            };
+            unsafe {
+                util::select_xinput_events(
+                    display,
+                    x_window.window,
+                    ffi::XIAllMasterDevices,
+                    mask
+                )
+            }.expect("Failed to select XInput2 events for window");
 
             // These properties must be set after mapping
             window.set_maximized(window_attrs.maximized);
@@ -480,7 +313,7 @@ impl Window2 {
         window: ffi::Window,
         root: ffi::Window,
         properties: (c_long, c_long, c_long, c_long),
-        operation: StateOperation
+        operation: util::StateOperation
     ) {
         let state_atom = unsafe { util::get_atom(xconn, b"_NET_WM_STATE\0") }
             .expect("Failed to call XInternAtom (_NET_WM_STATE)");
@@ -571,6 +404,8 @@ impl Window2 {
             (horz_atom as c_long, vert_atom as c_long, 0, 0),
             maximized.into(),
         );
+
+        self.invalidate_cached_frame_extents();
     }
 
     fn set_fullscreen_hint(&self, fullscreen: bool) {
@@ -584,26 +419,30 @@ impl Window2 {
             self.x.window,
             self.x.root,
             (fullscreen_atom as c_long, 0, 0, 0),
-            fullscreen.into()
+            fullscreen.into(),
         );
+
+        self.invalidate_cached_frame_extents();
     }
 
     pub fn set_title(&self, title: &str) {
-        let wm_name_atom = unsafe { util::get_atom(&self.x.display, b"_NET_WM_NAME\0") }
+        let xconn = &self.x.display;
+
+        let wm_name_atom = unsafe { util::get_atom(xconn, b"_NET_WM_NAME\0") }
             .expect("Failed to call XInternAtom (_NET_WM_NAME)");
-        let utf8_atom = unsafe { util::get_atom(&self.x.display, b"UTF8_STRING\0") }
+        let utf8_atom = unsafe { util::get_atom(xconn, b"UTF8_STRING\0") }
             .expect("Failed to call XInternAtom (UTF8_STRING)");
 
         let title = CString::new(title).expect("Window title contained null byte");
         unsafe {
-            (self.x.display.xlib.XStoreName)(
-                self.x.display.display,
+            (xconn.xlib.XStoreName)(
+                xconn.display,
                 self.x.window,
                 title.as_ptr() as *const c_char,
             );
 
             util::change_property(
-                &self.x.display,
+                xconn,
                 self.x.window,
                 wm_name_atom,
                 utf8_atom,
@@ -615,41 +454,30 @@ impl Window2 {
     }
 
     pub fn set_decorations(&self, decorations: bool) {
-        #[repr(C)]
-        struct MotifWindowHints {
-            flags: c_ulong,
-            functions: c_ulong,
-            decorations: c_ulong,
-            input_mode: c_long,
-            status: c_ulong,
-        }
+        let xconn = &self.x.display;
 
-        let wm_hints = unsafe { util::get_atom(&self.x.display, b"_MOTIF_WM_HINTS\0") }
+        let wm_hints = unsafe { util::get_atom(xconn, b"_MOTIF_WM_HINTS\0") }
             .expect("Failed to call XInternAtom (_MOTIF_WM_HINTS)");
 
-        let hints = MotifWindowHints {
-            flags: 2, // MWM_HINTS_DECORATIONS
-            functions: 0,
-            decorations: decorations as _,
-            input_mode: 0,
-            status: 0,
-        };
-
         unsafe {
-            (self.x.display.xlib.XChangeProperty)(
-                self.x.display.display,
+            util::change_property(
+                xconn,
                 self.x.window,
                 wm_hints,
                 wm_hints,
-                32, // struct members are longs
-                ffi::PropModeReplace,
-                &hints as *const _ as *const u8,
-                5 // struct has 5 members
-            );
-            (self.x.display.xlib.XFlush)(self.x.display.display);
-        }
+                util::Format::Long,
+                util::PropMode::Replace,
+                &[
+                    util::MWM_HINTS_DECORATIONS, // flags
+                    0, // functions
+                    decorations as c_ulong, // decorations
+                    0, // input mode
+                    0, // status
+                ],
+            )
+        }.expect("Failed to set decorations");
 
-        self.x.display.check_errors().expect("Failed to set decorations");
+        self.invalidate_cached_frame_extents();
     }
 
     pub fn show(&self) {
@@ -668,265 +496,50 @@ impl Window2 {
         }
     }
 
-    fn get_frame_extents(&self) -> Option<util::FrameExtents> {
-        let extents_atom = unsafe { util::get_atom(&self.x.display, b"_NET_FRAME_EXTENTS\0") }
-            .expect("Failed to call XInternAtom (_NET_FRAME_EXTENTS)");
-
-        if !self.supported_hints.contains(&extents_atom) {
-            return None;
-        }
-
-        // Of the WMs tested, xmonad, i3, dwm, IceWM (1.3.x and earlier), and blackbox don't
-        // support this. As this is part of EWMH (Extended Window Manager Hints), it's likely to
-        // be unsupported by many smaller WMs.
-        let extents: Option<Vec<c_ulong>> = unsafe {
-            util::get_property(
-                &self.x.display,
-                self.x.window,
-                extents_atom,
-                ffi::XA_CARDINAL,
-            )
-        }.ok();
-
-        extents.and_then(|extents| {
-            if extents.len() >= 4 {
-                Some(util::FrameExtents {
-                    left: extents[0],
-                    right: extents[1],
-                    top: extents[2],
-                    bottom: extents[3],
-                })
-            } else {
-                None
-            }
-        })
+    fn update_cached_frame_extents(&self) {
+        let extents = util::get_frame_extents_heuristic(
+            &self.x.display,
+            self.x.window,
+            self.x.root,
+        );
+        (*self.shared_state.lock().unwrap()).frame_extents = Some(extents);
     }
 
-    fn is_top_level(&self, id: ffi::Window) -> Option<bool> {
-        let client_list_atom = unsafe { util::get_atom(&self.x.display, b"_NET_CLIENT_LIST\0") }
-            .expect("Failed to call XInternAtom (_NET_CLIENT_LIST)");
-
-        if !self.supported_hints.contains(&client_list_atom) {
-            return None;
-        }
-
-        let client_list: Option<Vec<ffi::Window>> = unsafe {
-            util::get_property(
-                &self.x.display,
-                self.x.root,
-                client_list_atom,
-                ffi::XA_WINDOW,
-            )
-        }.ok();
-
-        client_list.map(|client_list| {
-            client_list.contains(&id)
-        })
-    }
-
-    fn get_geometry(&self) -> Option<util::WindowGeometry> {
-        // Position relative to root window.
-        // With rare exceptions, this is the position of a nested window. Cases where the window
-        // isn't nested are outlined in the comments throghout this function, but in addition to
-        // that, fullscreen windows sometimes aren't nested.
-        let (inner_x_rel_root, inner_y_rel_root, child) = unsafe {
-            let mut inner_x_rel_root: c_int = mem::uninitialized();
-            let mut inner_y_rel_root: c_int = mem::uninitialized();
-            let mut child: ffi::Window = mem::uninitialized();
-
-            (self.x.display.xlib.XTranslateCoordinates)(
-                self.x.display.display,
-                self.x.window,
-                self.x.root,
-                0,
-                0,
-                &mut inner_x_rel_root,
-                &mut inner_y_rel_root,
-                &mut child,
-            );
-
-            (inner_x_rel_root, inner_y_rel_root, child)
-        };
-
-        let (inner_x, inner_y, width, height, border) = unsafe {
-            let mut root: ffi::Window = mem::uninitialized();
-            // The same caveat outlined in the comment above for XTranslateCoordinates applies
-            // here as well. The only difference is that this position is relative to the parent
-            // window, rather than the root window.
-            let mut inner_x: c_int = mem::uninitialized();
-            let mut inner_y: c_int = mem::uninitialized();
-            // The width and height here are for the client area.
-            let mut width: c_uint = mem::uninitialized();
-            let mut height: c_uint = mem::uninitialized();
-            // xmonad and dwm were the only WMs tested that use the border return at all.
-            // The majority of WMs seem to simply fill it with 0 unconditionally.
-            let mut border: c_uint = mem::uninitialized();
-            let mut depth: c_uint = mem::uninitialized();
-
-            let status = (self.x.display.xlib.XGetGeometry)(
-                self.x.display.display,
-                self.x.window,
-                &mut root,
-                &mut inner_x,
-                &mut inner_y,
-                &mut width,
-                &mut height,
-                &mut border,
-                &mut depth,
-            );
-
-            if status == 0 {
-                return None;
-            }
-
-            (inner_x, inner_y, width, height, border)
-        };
-
-        // The first condition is only false for un-nested windows, but isn't always false for
-        // un-nested windows. Mutter/Muffin/Budgie and Marco present a mysterious discrepancy:
-        // when y is on the range [0, 2] and if the window has been unfocused since being
-        // undecorated (or was undecorated upon construction), the first condition is true,
-        // requiring us to rely on the second condition.
-        let nested = !(self.x.window == child || self.is_top_level(child) == Some(true));
-
-        // Hopefully the WM supports EWMH, allowing us to get exact info on the window frames.
-        if let Some(mut extents) = self.get_frame_extents() {
-            // Mutter/Muffin/Budgie and Marco preserve their decorated frame extents when
-            // decorations are disabled, but since the window becomes un-nested, it's easy to
-            // catch.
-            if !nested {
-                extents = util::FrameExtents::new(0, 0, 0, 0);
-            }
-
-            // The difference between the nested window's position and the outermost window's
-            // position is equivalent to the frame size. In most scenarios, this is equivalent to
-            // manually climbing the hierarchy as is done in the case below. Here's a list of
-            // known discrepancies:
-            // * Mutter/Muffin/Budgie gives decorated windows a margin of 9px (only 7px on top) in
-            //   addition to a 1px semi-transparent border. The margin can be easily observed by
-            //   using a screenshot tool to get a screenshot of a selected window, and is
-            //   presumably used for drawing drop shadows. Getting window geometry information
-            //   via hierarchy-climbing results in this margin being included in both the
-            //   position and outer size, so a window positioned at (0, 0) would be reported as
-            //   having a position (-10, -8).
-            // * Compiz has a drop shadow margin just like Mutter/Muffin/Budgie, though it's 10px
-            //   on all sides, and there's no additional border.
-            // * Enlightenment otherwise gets a y position equivalent to inner_y_rel_root.
-            //   Without decorations, there's no difference. This is presumably related to
-            //   Enlightenment's fairly unique concept of window position; it interprets
-            //   positions given to XMoveWindow as a client area position rather than a position
-            //   of the overall window.
-            let abs_x = inner_x_rel_root - extents.left as c_int;
-            let abs_y = inner_y_rel_root - extents.top as c_int;
-
-            Some(util::WindowGeometry {
-                x: abs_x,
-                y: abs_y,
-                width,
-                height,
-                frame: extents,
-            })
-        } else if nested {
-            // If the position value we have is for a nested window used as the client area, we'll
-            // just climb up the hierarchy and get the geometry of the outermost window we're
-            // nested in.
-            let window = {
-                let root = self.x.root;
-                let mut window = self.x.window;
-                loop {
-                    let candidate = unsafe {
-                        self.x.get_parent_window(window).unwrap()
-                    };
-                    if candidate == root {
-                        break window;
-                    }
-                    window = candidate;
-                }
-            };
-
-            let (outer_x, outer_y, outer_width, outer_height) = unsafe {
-                let mut root: ffi::Window = mem::uninitialized();
-                let mut outer_x: c_int = mem::uninitialized();
-                let mut outer_y: c_int = mem::uninitialized();
-                let mut outer_width: c_uint = mem::uninitialized();
-                let mut outer_height: c_uint = mem::uninitialized();
-                let mut border: c_uint = mem::uninitialized();
-                let mut depth: c_uint = mem::uninitialized();
-
-                let status = (self.x.display.xlib.XGetGeometry)(
-                    self.x.display.display,
-                    window,
-                    &mut root,
-                    &mut outer_x,
-                    &mut outer_y,
-                    &mut outer_width,
-                    &mut outer_height,
-                    &mut border,
-                    &mut depth,
-                );
-
-                if status == 0 {
-                    return None;
-                }
-
-                (outer_x, outer_y, outer_width, outer_height)
-            };
-
-            // Since we have the geometry of the outermost window and the geometry of the client
-            // area, we can figure out what's in between.
-            let frame = {
-                let diff_x = outer_width.saturating_sub(width);
-                let diff_y = outer_height.saturating_sub(height);
-                let offset_y = inner_y_rel_root.saturating_sub(outer_y) as c_uint;
-
-                let left = diff_x / 2;
-                let right = left;
-                let top = offset_y;
-                let bottom = diff_y.saturating_sub(offset_y);
-
-                util::FrameExtents::new(left.into(), right.into(), top.into(), bottom.into())
-            };
-
-            Some(util::WindowGeometry {
-                x: outer_x,
-                y: outer_y,
-                width,
-                height,
-                frame,
-            })
-        } else {
-            // This is the case for xmonad and dwm, AKA the only WMs tested that supplied a
-            // border value. This is convenient, since we can use it to get an accurate frame.
-            let frame = util::FrameExtents::from_border(border.into());
-            Some(util::WindowGeometry {
-                x: inner_x,
-                y: inner_y,
-                width,
-                height,
-                frame,
-            })
-        }
+    fn invalidate_cached_frame_extents(&self) {
+        (*self.shared_state.lock().unwrap()).frame_extents.take();
     }
 
     #[inline]
     pub fn get_position(&self) -> Option<(i32, i32)> {
-        self.get_geometry().map(|geo| geo.get_position())
+        let extents = (*self.shared_state.lock().unwrap()).frame_extents.clone();
+        if let Some(extents) = extents {
+            self.get_inner_position().map(|(x, y)|
+                extents.inner_pos_to_outer(x, y)
+            )
+        } else {
+            self.update_cached_frame_extents();
+            self.get_position()
+        }
     }
 
     #[inline]
     pub fn get_inner_position(&self) -> Option<(i32, i32)> {
-        self.get_geometry().map(|geo| geo.get_inner_position())
+        unsafe { util::translate_coords(&self.x.display, self.x.window, self.x.root) }
+            .ok()
+            .map(|coords| (coords.x_rel_root, coords.y_rel_root))
     }
 
     pub fn set_position(&self, mut x: i32, mut y: i32) {
-        if let Some(ref wm_name) = self.wm_name {
-            // There are a few WMs that set client area position rather than window position, so
-            // we'll translate for consistency.
-            if ["Enlightenment", "FVWM"].contains(&wm_name.as_str()) {
-                if let Some(extents) = self.get_frame_extents() {
-                    x += extents.left as i32;
-                    y += extents.top as i32;
-                }
+        // There are a few WMs that set client area position rather than window position, so
+        // we'll translate for consistency.
+        if util::wm_name_is_one_of(&["Enlightenment", "FVWM"]) {
+            let extents = (*self.shared_state.lock().unwrap()).frame_extents.clone();
+            if let Some(extents) = extents {
+                x += extents.frame_extents.left as i32;
+                y += extents.frame_extents.top as i32;
+            } else {
+                self.update_cached_frame_extents();
+                self.set_position(x, y)
             }
         }
         unsafe {
@@ -942,12 +555,23 @@ impl Window2 {
 
     #[inline]
     pub fn get_inner_size(&self) -> Option<(u32, u32)> {
-        self.get_geometry().map(|geo| geo.get_inner_size())
+        unsafe { util::get_geometry(&self.x.display, self.x.window) }
+            .ok()
+            .map(|geo| (geo.width, geo.height))
     }
 
     #[inline]
     pub fn get_outer_size(&self) -> Option<(u32, u32)> {
-        self.get_geometry().map(|geo| geo.get_outer_size())
+        let extents = (*self.shared_state.lock().unwrap()).frame_extents.clone();
+        if let Some(extents) = extents {
+            self.get_inner_size().map(|(w, h)|
+                extents.inner_size_to_outer(w, h)
+            )
+        } else {
+            drop(extents);
+            self.update_cached_frame_extents();
+            self.get_outer_size()
+        }
     }
 
     #[inline]
