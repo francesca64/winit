@@ -38,12 +38,16 @@ unsafe impl Sync for Window2 {}
 #[derive(Debug)]
 pub struct SharedState {
     pub frame_extents: Option<util::FrameExtentsHeuristic>,
+    pub inner_position: Option<(i32, i32)>,
+    pub inner_size: Option<(u32, u32)>,
 }
 
 impl SharedState {
     fn new() -> Self {
         SharedState {
             frame_extents: None,
+            inner_position: None,
+            inner_size: None,
         }
     }
 }
@@ -524,9 +528,21 @@ impl Window2 {
 
     #[inline]
     pub fn get_inner_position(&self) -> Option<(i32, i32)> {
-        unsafe { util::translate_coords(&self.x.display, self.x.window, self.x.root) }
-            .ok()
-            .map(|coords| (coords.x_rel_root, coords.y_rel_root))
+        let mut shared_state_lock = self.shared_state.lock().unwrap();
+        let inner_position = (*shared_state_lock).inner_position.clone();
+        if let Some(_) = inner_position {
+            inner_position
+        } else {
+            // This case will never really be entered, unless you're doing something weird like
+            // not running the event loop.
+            let inner_position = unsafe { util::translate_coords(
+                &self.x.display,
+                self.x.window,
+                self.x.root,
+            ) }.ok().map(|coords| (coords.x_rel_root, coords.y_rel_root));
+            (*shared_state_lock).inner_position = inner_position.clone();
+            inner_position
+        }
     }
 
     pub fn set_position(&self, mut x: i32, mut y: i32) {
@@ -555,9 +571,19 @@ impl Window2 {
 
     #[inline]
     pub fn get_inner_size(&self) -> Option<(u32, u32)> {
-        unsafe { util::get_geometry(&self.x.display, self.x.window) }
-            .ok()
-            .map(|geo| (geo.width, geo.height))
+        let mut shared_state_lock = self.shared_state.lock().unwrap();
+        let inner_size = (*shared_state_lock).inner_size.clone();
+        if let Some(_) = inner_size {
+            inner_size
+        } else {
+            // This case will never really be entered, unless you're doing something weird like
+            // not running the event loop.
+            let inner_size = unsafe { util::get_geometry(&self.x.display, self.x.window) }
+                .ok()
+                .map(|geo| (geo.width, geo.height));
+            (*shared_state_lock).inner_size = inner_size.clone();
+            inner_size
+        }
     }
 
     #[inline]
@@ -568,7 +594,6 @@ impl Window2 {
                 extents.inner_size_to_outer(w, h)
             )
         } else {
-            drop(extents);
             self.update_cached_frame_extents();
             self.get_outer_size()
         }

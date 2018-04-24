@@ -416,9 +416,17 @@ impl EventsLoop {
                 };
 
                 if resized {
+                    let (width, height) = (xev.width as u32, xev.height as u32);
+                    self.shared_state
+                        .borrow()
+                        .get(&WindowId(window))
+                        .map(|shared_state| {
+                            let mut shared_state_lock = shared_state.lock().unwrap();
+                            (*shared_state_lock).inner_size = Some((width, height));
+                        });
                     callback(Event::WindowEvent {
                         window_id,
-                        event: WindowEvent::Resized(xev.width as u32, xev.height as u32),
+                        event: WindowEvent::Resized(width, height),
                     });
                 }
 
@@ -429,6 +437,7 @@ impl EventsLoop {
                         .map(|shared_state| {
                             let (inner_x, inner_y) = (xev.x as i32, xev.y as i32);
                             let mut shared_state_lock = shared_state.lock().unwrap();
+                            (*shared_state_lock).inner_position = Some((inner_x, inner_y));
                             if (*shared_state_lock).frame_extents.is_some() {
                                 (*shared_state_lock).frame_extents
                                     .as_ref()
