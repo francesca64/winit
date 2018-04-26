@@ -1000,27 +1000,19 @@ impl EventsLoopProxy {
 
         // Push an event on the X event queue so that methods run_forever will advance.
         //
-        // NOTE: This code (and the following `XSendEvent` code) is taken from the old
-        // `WindowProxy::wakeup` implementation. The code assumes that X11 is thread safe. Is this
-        // true?
-        let mut xev = ffi::XClientMessageEvent {
-            type_: ffi::ClientMessage,
-            window: self.wakeup_dummy_window,
-            format: 32,
-            message_type: 0,
-            serial: 0,
-            send_event: 0,
-            display: display.display,
-            data: unsafe { mem::zeroed() },
-        };
-
+        // NOTE: This design is taken from the old `WindowProxy::wakeup` implementation. It
+        // assumes that X11 is thread safe. Is this true?
+        // (WARNING: it's probably not true)
         unsafe {
-            let propagate = false as i32;
-            let event_mask = 0;
-            let xevent = &mut xev as *mut ffi::XClientMessageEvent as *mut ffi::XEvent;
-            (display.xlib.XSendEvent)(display.display, self.wakeup_dummy_window, propagate, event_mask, xevent);
+            util::send_client_msg(
+                &display,
+                self.wakeup_dummy_window,
+                self.wakeup_dummy_window,
+                0,
+                None,
+                (0, 0, 0, 0, 0),
+            ).expect("Failed to call XSendEvent after wakeup");
             (display.xlib.XFlush)(display.display);
-            display.check_errors().expect("Failed to call XSendEvent after wakeup");
         }
 
         Ok(())
