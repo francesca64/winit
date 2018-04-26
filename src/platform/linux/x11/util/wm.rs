@@ -3,7 +3,6 @@ use std::sync::Mutex;
 use super::*;
 
 // This info is global to the window manager.
-// TODO: Re-query if the WM is replaced.
 lazy_static! {
     static ref SUPPORTED_HINTS: Mutex<Vec<ffi::Atom>> = Mutex::new(Vec::with_capacity(0));
     static ref WM_NAME: Mutex<Option<String>> = Mutex::new(None);

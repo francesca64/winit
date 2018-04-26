@@ -1012,7 +1012,6 @@ impl EventsLoopProxy {
                 None,
                 (0, 0, 0, 0, 0),
             ).expect("Failed to call XSendEvent after wakeup");
-            (display.xlib.XFlush)(display.display);
         }
 
         Ok(())

@@ -98,6 +98,21 @@ impl<'a, T> Drop for XSmartPointer<'a, T> {
     }
 }
 
+// This is impoartant, so pay attention!
+// Xlib has an output buffer, and tries to hide the async nature of X from you.
+// This buffer contains the requests you make, and is flushed under various circumstances:
+// 1. XPending, XNextEvent, and XWindowEvent flush "as needed"
+// 2. XFlush explicitly flushes
+// 3. XSync flushes and blocks until all requests are responded to
+// 4. Calls that have a return dependent on a response (i.e. XGetWindowProperty) sync internally.
+//    When in doubt, check the X11 source; if a function calls _XReply, it flushes and waits.
+pub unsafe fn flush_requests(xconn: &Arc<XConnection>) -> Result<(), XError> {
+    (xconn.xlib.XFlush)(xconn.display);
+    // This isn't necessarily a useful time to check for errors (since our request hasn't
+    // necessarily been processed yet)
+    xconn.check_errors()
+}
+
 pub unsafe fn send_client_msg(
     xconn: &Arc<XConnection>,
     window: c_ulong,        // the window this is "about"; not necessarily this window
@@ -129,5 +144,7 @@ pub unsafe fn send_client_msg(
         &mut event.into(),
     );
 
-    xconn.check_errors().map(|_| ())
+    // Since XSendEvent doesn't return, we need to flush!
+    // (assuming we want it sent *now*)
+    flush_requests()
 }
