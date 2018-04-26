@@ -765,6 +765,7 @@ impl EventsLoop {
                                     let x = unsafe { *value };
                                     if let Some(&mut (_, ref mut info)) = physical_device.scroll_axes.iter_mut().find(|&&mut (axis, _)| axis == i) {
                                         let delta = (x - info.position) / info.increment;
+                                        println!("[ScrollEvent] Delta: {:?}, Increment: {:?}, NewPosition: {:?}, OldPosition: {:?}", delta, info.increment, x, info.position);
                                         info.position = x;
                                         events.push(Event::WindowEvent {
                                             window_id,
@@ -805,6 +806,12 @@ impl EventsLoop {
                         let device_id = mkdid(xev.deviceid);
 
                         let mut devices = self.devices.borrow_mut();
+                        println!("[ResetScroll] SourceID: {:?}, DeviceID: {:?}, SourceExists: {:?}, DeviceExists: {:?}",
+                            xev.sourceid,
+                            xev.deviceid,
+                            devices.contains_key(&DeviceId(xev.deviceid)),
+                            devices.contains_key(&DeviceId(xev.sourceid)),
+                        );
                         let physical_device = match devices.get_mut(&DeviceId(xev.sourceid)) {
                             Some(device) => device,
                             None => return,
