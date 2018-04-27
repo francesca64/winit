@@ -8,7 +8,7 @@ use std::os::windows::ffi::OsStrExt;
 use std::sync::{Arc, Mutex};
 use std::sync::mpsc::channel;
 
-use winapi::shared::minwindef::{BOOL, DWORD, FALSE, TRUE, UINT};
+use winapi::shared::minwindef::{BOOL, DWORD, FALSE, LPARAM, TRUE, UINT, WORD, WPARAM};
 use winapi::shared::windef::{HDC, HWND, LPPOINT, POINT, RECT};
 use winapi::um::{combaseapi, dwmapi, libloaderapi, winuser};
 use winapi::um::objbase::{COINIT_MULTITHREADED};
@@ -23,7 +23,8 @@ use MouseCursor;
 use WindowAttributes;
 
 use platform::platform::{Cursor, EventsLoop, PlatformSpecificWindowBuilderAttributes, WindowId};
-use platform::platform::events_loop::{self, DESTROY_MSG_ID};
+use platform::platform::dpi::{BASE_DPI, become_dpi_aware, get_window_dpi, get_window_scale_factor};
+use platform::platform::events_loop::{self, DESTROY_MSG_ID, INITIAL_DPI_MSG_ID};
 use platform::platform::icon::{self, IconType, WinIcon};
 use platform::platform::raw_input::register_all_mice_and_keyboards_for_raw_input;
 use platform::platform::util;
@@ -78,6 +79,8 @@ impl Window {
         pl_attr: PlatformSpecificWindowBuilderAttributes,
     ) -> Result<Window, CreationError> {
         let (tx, rx) = channel();
+
+        unsafe { become_dpi_aware(events_loop.dpi_aware) };
 
         let proxy = events_loop.create_proxy();
 
@@ -140,8 +143,15 @@ impl Window {
     /// See the docs in the crate root file.
     pub fn set_position(&self, x: i32, y: i32) {
         unsafe {
-            winuser::SetWindowPos(self.window.0, ptr::null_mut(), x as raw::c_int, y as raw::c_int,
-                                 0, 0, winuser::SWP_ASYNCWINDOWPOS | winuser::SWP_NOZORDER | winuser::SWP_NOSIZE);
+            winuser::SetWindowPos(
+                self.window.0,
+                ptr::null_mut(),
+                x as raw::c_int,
+                y as raw::c_int,
+                0,
+                0,
+                winuser::SWP_ASYNCWINDOWPOS | winuser::SWP_NOZORDER | winuser::SWP_NOSIZE,
+            );
             winuser::UpdateWindow(self.window.0);
         }
     }
@@ -382,7 +392,9 @@ impl Window {
 
     #[inline]
     pub fn hidpi_factor(&self) -> f32 {
-        1.0
+        unsafe {
+            get_window_scale_factor(self.window.0, self.window.1)
+        }
     }
 
     pub fn set_cursor_position(&self, x: i32, y: i32) -> Result<(), ()> {
@@ -790,10 +802,13 @@ unsafe fn init(
     // registering the window class
     let class_name = register_window_class(&window_icon, &taskbar_icon);
 
+    let dimensions = window.dimensions.unwrap_or((1024, 768));
     // building a RECT object with coordinates
     let mut rect = RECT {
-        left: 0, right: window.dimensions.unwrap_or((1024, 768)).0 as LONG,
-        top: 0, bottom: window.dimensions.unwrap_or((1024, 768)).1 as LONG,
+        left: 0,
+        right: dimensions.0 as LONG,
+        top: 0,
+        bottom: dimensions.1 as LONG,
     };
 
     // computing the style and extended style of the window
@@ -889,6 +904,23 @@ unsafe fn init(
     let (transparent, maximized, fullscreen) = (
         window.transparent.clone(), window.maximized.clone(), window.fullscreen.clone()
     );
+
+    let dpi = get_window_dpi(real_window.0, real_window.1);
+    if dpi != BASE_DPI {
+        let width = dimensions.0 as WORD;
+        let height = dimensions.1 as WORD;
+        let mut packed_dimensions = 0;
+        // MAKELPARAM isn't provided by winapi yet.
+        let ptr = &mut packed_dimensions as *mut LPARAM as *mut WORD;
+        *ptr.offset(0) = width;
+        *ptr.offset(1) = height;
+        winuser::PostMessageW(
+            real_window.0,
+            *INITIAL_DPI_MSG_ID,
+            dpi as WPARAM,
+            packed_dimensions,
+        );
+    }
 
     // Creating a mutex to track the current window state
     let window_state = Arc::new(Mutex::new(events_loop::WindowState {

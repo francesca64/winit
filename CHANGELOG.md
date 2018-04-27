@@ -4,6 +4,7 @@
 - `MouseCursor` and `CursorState` now implement `Default`.
 - `WindowBuilder::with_resizable` implemented for Windows.
 - On X11, exiting fullscreen no longer leaves the window in the monitor's top left corner.
+- The Windows backend is now DPI aware. `WindowEvent::HiDPIFactorChanged` is implemented, and `MonitorId::get_hidpi_factor` and `Window::hidpi_factor` return accurate values. Window creation along with returned positions and sizes now correctly use pixels rather than points.
 
 # Version 0.15.0 (2018-05-22)
 

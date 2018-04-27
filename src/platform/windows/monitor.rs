@@ -7,6 +7,7 @@ use std::collections::VecDeque;
 use std::{mem, ptr};
 
 use super::{EventsLoop, util};
+use platform::platform::dpi::{become_dpi_aware, dpi_to_scale_factor, get_monitor_dpi};
 
 /// Win32 implementation of the main `MonitorId` object.
 #[derive(Debug, Clone)]
@@ -31,7 +32,7 @@ pub struct MonitorId {
     /// The current resolution in pixels on the monitor.
     dimensions: (u32, u32),
 
-    /// DPI scaling factor.
+    /// DPI scale factor.
     hidpi_factor: f32,
 }
 
@@ -58,6 +59,8 @@ unsafe extern "system" fn monitor_enum_proc(hmonitor: HMONITOR, _: HDC, place: L
         return TRUE;
     }
 
+    let hidpi_factor = dpi_to_scale_factor(get_monitor_dpi(hmonitor).unwrap_or(96));
+
     (*monitors).push_back(MonitorId {
         adapter_name: monitor_info.szDevice,
         hmonitor: HMonitor(hmonitor),
@@ -65,7 +68,7 @@ unsafe extern "system" fn monitor_enum_proc(hmonitor: HMONITOR, _: HDC, place: L
         primary: monitor_info.dwFlags & winuser::MONITORINFOF_PRIMARY != 0,
         position,
         dimensions,
-        hidpi_factor: 1.0,
+        hidpi_factor,
     });
 
     // TRUE means continue enumeration.
@@ -75,9 +78,17 @@ unsafe extern "system" fn monitor_enum_proc(hmonitor: HMONITOR, _: HDC, place: L
 impl EventsLoop {
     pub fn get_available_monitors(&self) -> VecDeque<MonitorId> {
         unsafe {
-            let mut result: VecDeque<MonitorId> = VecDeque::new();
-            winuser::EnumDisplayMonitors(ptr::null_mut(), ptr::null_mut(), Some(monitor_enum_proc), &mut result as *mut _ as LPARAM);
-            result
+            // We need to enable DPI awareness to get correct resolution and DPI values.
+            become_dpi_aware(self.dpi_aware);
+
+            let mut monitors: VecDeque<MonitorId> = VecDeque::new();
+            winuser::EnumDisplayMonitors(
+                ptr::null_mut(),
+                ptr::null_mut(),
+                Some(monitor_enum_proc),
+                &mut monitors as *mut _ as LPARAM,
+            );
+            monitors
         }
     }
 
@@ -113,9 +124,12 @@ impl EventsLoop {
     }
 
     pub fn get_primary_monitor(&self) -> MonitorId {
-        // we simply get all available monitors and return the one with the `MONITORINFOF_PRIMARY` flag
-        // TODO: it is possible to query the win32 API for the primary monitor, this should be done
-        //  instead
+        unsafe { become_dpi_aware(self.dpi_aware) };
+
+        // We simply get all available monitors and return the one with the `MONITORINFOF_PRIMARY`
+        // flag.
+        // TODO: It is possible to query the win32 API for the primary monitor, this should be
+        // done instead.
         for monitor in self.get_available_monitors().into_iter() {
             if monitor.primary {
                 return monitor;
