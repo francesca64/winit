@@ -1,5 +1,7 @@
 # Unreleased
 
+- The Windows backend is now DPI aware. `WindowEvent::HiDPIFactorChanged` is implemented, and `MonitorId::get_hidpi_factor` and `Window::hidpi_factor` return accurate values. Window creation along with returned positions and sizes now correctly use pixels rather than points.
+
 # Version 0.15.0 (2018-05-22)
 
 - `Icon::to_cardinals` is no longer public, since it was never supposed to be.

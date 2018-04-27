@@ -12,30 +12,35 @@
 //! The closure passed to the `execute_in_thread` method takes an `Inserter` that you can use to
 //! add a `WindowState` entry to a list of window to be used by the callback.
 
+use std::{mem, ptr, thread};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ffi::OsString;
-use std::mem;
 use std::os::windows::ffi::OsStringExt;
 use std::os::windows::io::AsRawHandle;
-use std::ptr;
-use std::sync::mpsc;
-use std::sync::Arc;
-use std::sync::Barrier;
-use std::sync::Mutex;
-use std::sync::Condvar;
-use std::thread;
+use std::sync::{Arc, Barrier, Condvar, mpsc, Mutex};
 
-use winapi::shared::minwindef::{LOWORD, HIWORD, DWORD, WPARAM, LPARAM, INT, UINT, LRESULT, MAX_PATH};
+use winapi::shared::minwindef::{
+    LOWORD,
+    HIWORD,
+    DWORD,
+    WPARAM,
+    LPARAM,
+    INT,
+    UINT,
+    LRESULT,
+    MAX_PATH,
+};
 use winapi::shared::windef::{HWND, POINT, RECT};
 use winapi::shared::windowsx;
 use winapi::um::{winuser, shellapi, processthreadsapi};
-use winapi::um::winnt::{LONG, SHORT};
+use winapi::um::winnt::{LONG, LPCSTR, SHORT};
 
 use events::DeviceEvent;
 use platform::platform::{event, Cursor, WindowId, DEVICE_ID, wrap_device_id, util};
+use platform::platform::dpi::{dpi_to_scale_factor, enable_non_client_dpi_scaling};
 use platform::platform::event::{handle_extended_keys, process_key_params, vkey_to_winit_vkey};
-use platform::platform::raw_input::*;
+use platform::platform::raw_input::{get_raw_input_data, get_raw_mouse_button_state};
 use platform::platform::window::adjust_size;
 
 use ControlFlow;
@@ -98,11 +103,17 @@ pub struct EventsLoop {
     // Variable that contains the block state of the win32 event loop thread during a WM_SIZE event.
     // The mutex's value is `true` when it's blocked, and should be set to false when it's done
     // blocking. That's done by the parent thread when it receives a Resized event.
-    win32_block_loop: Arc<(Mutex<bool>, Condvar)>
+    win32_block_loop: Arc<(Mutex<bool>, Condvar)>,
+    // Whether to enable process-global DPI awareness.
+    pub(super) dpi_aware: bool,
 }
 
 impl EventsLoop {
     pub fn new() -> EventsLoop {
+        Self::with_dpi_awareness(true)
+    }
+
+    pub fn with_dpi_awareness(dpi_aware: bool) -> EventsLoop {
         // The main events transfer channel.
         let (tx, rx) = mpsc::channel();
         let win32_block_loop = Arc::new((Mutex::new(false), Condvar::new()));
@@ -171,7 +182,8 @@ impl EventsLoop {
         EventsLoop {
             thread_id,
             receiver: rx,
-            win32_block_loop
+            win32_block_loop,
+            dpi_aware
         }
     }
 
@@ -289,22 +301,21 @@ impl EventsLoopProxy {
     where
         F: FnMut(Inserter) + Send + 'static,
     {
-        unsafe {
-            // We are using double-boxing here because it make casting back much easier
-            let boxed = Box::new(function) as Box<FnMut(_)>;
-            let boxed2 = Box::new(boxed);
-            let raw = Box::into_raw(boxed2);
+        // We are using double-boxing here because it make casting back much easier
+        let double_box = Box::new(Box::new(function) as Box<FnMut(_)>);
+        let raw = Box::into_raw(double_box);
 
-            let res = winuser::PostThreadMessageA(
+        let res = unsafe {
+            winuser::PostThreadMessageA(
                 self.thread_id,
                 *EXEC_MSG_ID,
                 raw as *mut () as usize as WPARAM,
                 0,
-            );
-            // PostThreadMessage can only fail if the thread ID is invalid (which shouldn't happen
-            // as the events loop is still alive) or if the queue is full.
-            assert!(res != 0, "PostThreadMessage failed; is the messages queue full?");
-        }
+            )
+        };
+        // PostThreadMessage can only fail if the thread ID is invalid (which shouldn't happen as
+        // the events loop is still alive) or if the queue is full.
+        assert!(res != 0, "PostThreadMessage failed; is the messages queue full?");
     }
 }
 
@@ -313,7 +324,7 @@ lazy_static! {
     // WPARAM and LPARAM are unused.
     static ref WAKEUP_MSG_ID: u32 = {
         unsafe {
-            winuser::RegisterWindowMessageA("Winit::WakeupMsg\0".as_ptr() as *const i8)
+            winuser::RegisterWindowMessageA("Winit::WakeupMsg\0".as_ptr() as LPCSTR)
         }
     };
     // Message sent when we want to execute a closure in the thread.
@@ -321,14 +332,21 @@ lazy_static! {
     // and LPARAM is unused.
     static ref EXEC_MSG_ID: u32 = {
         unsafe {
-            winuser::RegisterWindowMessageA("Winit::ExecMsg\0".as_ptr() as *const i8)
+            winuser::RegisterWindowMessageA("Winit::ExecMsg\0".as_ptr() as LPCSTR)
         }
     };
     // Message sent by a `Window` when it wants to be destroyed by the main thread.
     // WPARAM and LPARAM are unused.
     pub static ref DESTROY_MSG_ID: u32 = {
         unsafe {
-            winuser::RegisterWindowMessageA("Winit::DestroyMsg\0".as_ptr() as *const i8)
+            winuser::RegisterWindowMessageA("Winit::DestroyMsg\0".as_ptr() as LPCSTR)
+        }
+    };
+    // Message sent by a `Window` after creation if it has a DPI != 96.
+    // WPARAM is the the DPI (u32). LOWORD of LPARAM is width, and HIWORD is height.
+    pub static ref INITIAL_DPI_MSG_ID: u32 = {
+        unsafe {
+            winuser::RegisterWindowMessageA("Winit::InitialDpiMsg\0".as_ptr() as LPCSTR)
         }
     };
 }
@@ -385,11 +403,18 @@ unsafe fn release_mouse() {
 //
 // Returning 0 tells the Win32 API that the message has been processed.
 // FIXME: detect WM_DWMCOMPOSITIONCHANGED and call DwmEnableBlurBehindWindow if necessary
-pub unsafe extern "system" fn callback(window: HWND, msg: UINT,
-                                       wparam: WPARAM, lparam: LPARAM)
-                                       -> LRESULT
-{
+pub unsafe extern "system" fn callback(
+    window: HWND,
+    msg: UINT,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
     match msg {
+        winuser::WM_NCCREATE => {
+            enable_non_client_dpi_scaling(window);
+            winuser::DefWindowProcW(window, msg, wparam, lparam)
+        },
+
         winuser::WM_CLOSE => {
             use events::WindowEvent::CloseRequested;
             send_event(Event::WindowEvent {
@@ -1007,9 +1032,54 @@ pub unsafe extern "system" fn callback(window: HWND, msg: UINT,
             0
         },
 
+        // Only sent on Windows 8.1 or newer. On Windows 7 and older user has to log out to change
+        // DPI, therefore all applications are closed while DPI is changing.
+        winuser::WM_DPICHANGED => {
+            use events::WindowEvent::HiDPIFactorChanged;
+
+            // This message actually provides two DPI values - x and y. However MSDN says that
+            // "you only need to use either the X-axis or the Y-axis value when scaling your
+            // application since they are the same".
+            // https://msdn.microsoft.com/en-us/library/windows/desktop/dn312083(v=vs.85).aspx
+            let dpi_x = u32::from(LOWORD(wparam as DWORD));
+
+            // Resize window to the size suggested by Windows.
+            let rect = &*(lparam as *const RECT);
+            winuser::SetWindowPos(
+                window,
+                ptr::null_mut(),
+                rect.left,
+                rect.top,
+                rect.right - rect.left,
+                rect.bottom - rect.top,
+                winuser::SWP_NOZORDER | winuser::SWP_NOACTIVATE,
+            );
+
+            send_event(Event::WindowEvent {
+                window_id: SuperWindowId(WindowId(window)),
+                event: HiDPIFactorChanged(dpi_to_scale_factor(dpi_x)),
+            });
+
+            0
+        },
+
         _ => {
             if msg == *DESTROY_MSG_ID {
                 winuser::DestroyWindow(window);
+                0
+            } else if msg == *INITIAL_DPI_MSG_ID {
+                use events::WindowEvent::{HiDPIFactorChanged, Resized};
+                let scale_factor = dpi_to_scale_factor(wparam as u32);
+                let width = LOWORD(lparam as DWORD) as u32;
+                let height = HIWORD(lparam as DWORD) as u32;
+                send_event(Event::WindowEvent {
+                    window_id: SuperWindowId(WindowId(window)),
+                    event: HiDPIFactorChanged(scale_factor),
+                });
+                send_event(Event::WindowEvent {
+                    window_id: SuperWindowId(WindowId(window)),
+                    event: Resized(width, height),
+                });
                 0
             } else {
                 winuser::DefWindowProcW(window, msg, wparam, lparam)
