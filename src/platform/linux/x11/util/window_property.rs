@@ -21,7 +21,7 @@ impl GetPropertyError {
     }
 }
 
-// Number of 32-bit chunks to retrieve per interation of get_property's inner loop.
+// Number of 32-bit chunks to retrieve per iteration of get_property's inner loop.
 // To test if get_property works correctly, set this to 1.
 const PROPERTY_BUFFER_SIZE: c_long = 1024; // 4k of RAM ought to be enough for anyone!
 
