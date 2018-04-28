@@ -73,10 +73,9 @@ impl Window2 {
         window_attrs: &WindowAttributes,
         pl_attribs: &PlatformSpecificWindowBuilderAttributes,
     ) -> Result<Window2, CreationError> {
-        let display = &ctx.display;
+        let xconn = &ctx.display;
 
         let dimensions = {
-
             // x11 only applies constraints when the window is actively resized
             // by the user, so we have to manually apply the initial constraints
             let mut dimensions = window_attrs.dimensions.unwrap_or((800, 600));
@@ -84,18 +83,16 @@ impl Window2 {
                 dimensions.0 = cmp::min(dimensions.0, max.0);
                 dimensions.1 = cmp::min(dimensions.1, max.1);
             }
-
             if let Some(min) = window_attrs.min_dimensions {
                 dimensions.0 = cmp::max(dimensions.0, min.0);
                 dimensions.1 = cmp::max(dimensions.1, min.1);
             }
             dimensions
-
         };
 
         let screen_id = match pl_attribs.screen_id {
             Some(id) => id,
-            None => unsafe { (display.xlib.XDefaultScreen)(display.display) },
+            None => unsafe { (xconn.xlib.XDefaultScreen)(xconn.display) },
         };
 
         // getting the root window
@@ -107,13 +104,18 @@ impl Window2 {
             swa.colormap = if let Some(vi) = pl_attribs.visual_infos {
                 unsafe {
                     let visual = vi.visual;
-                    (display.xlib.XCreateColormap)(display.display, root, visual, ffi::AllocNone)
+                    (xconn.xlib.XCreateColormap)(xconn.display, root, visual, ffi::AllocNone)
                 }
             } else { 0 };
-            swa.event_mask = ffi::ExposureMask | ffi::StructureNotifyMask |
-                ffi::VisibilityChangeMask | ffi::KeyPressMask | ffi::PointerMotionMask |
-                ffi::KeyReleaseMask | ffi::ButtonPressMask |
-                ffi::ButtonReleaseMask | ffi::KeymapStateMask;
+            swa.event_mask = ffi::ExposureMask
+                | ffi::StructureNotifyMask
+                | ffi::VisibilityChangeMask
+                | ffi::KeyPressMask
+                | ffi::KeyReleaseMask
+                | ffi::KeymapStateMask
+                | ffi::ButtonPressMask
+                | ffi::ButtonReleaseMask
+                | ffi::PointerMotionMask;
             swa.border_pixel = 0;
             if window_attrs.transparent {
                 swa.background_pixel = 0;
@@ -130,8 +132,14 @@ impl Window2 {
 
         // finally creating the window
         let window = unsafe {
-            let win = (display.xlib.XCreateWindow)(display.display, root, 0, 0, dimensions.0 as c_uint,
-                dimensions.1 as c_uint, 0,
+            (xconn.xlib.XCreateWindow)(
+                xconn.display,
+                root,
+                0,
+                0,
+                dimensions.0 as c_uint,
+                dimensions.1 as c_uint,
+                0,
                 match pl_attribs.visual_infos {
                     Some(vi) => vi.depth,
                     None => ffi::CopyFromParent
@@ -142,13 +150,12 @@ impl Window2 {
                     None => ffi::CopyFromParent as *mut _
                 },
                 window_attributes,
-                &mut set_win_attr);
-            display.check_errors().expect("Failed to call XCreateWindow");
-            win
+                &mut set_win_attr,
+            )
         };
 
         let x_window = Arc::new(XWindow {
-            display: Arc::clone(display),
+            display: Arc::clone(xconn),
             window,
             root,
             screen_id,
@@ -171,11 +178,11 @@ impl Window2 {
 
             // Enable drag and drop
             unsafe {
-                let dnd_aware_atom = util::get_atom(display, b"XdndAware\0")
+                let dnd_aware_atom = util::get_atom(xconn, b"XdndAware\0")
                     .expect("Failed to call XInternAtom (XdndAware)");
                 let version = &[5 as c_ulong]; // Latest version; hasn't changed since 2002
                 util::change_property(
-                    &display,
+                    xconn,
                     x_window.window,
                     dnd_aware_atom,
                     ffi::XA_ATOM,
@@ -191,14 +198,14 @@ impl Window2 {
                 let name = CString::new(window_attrs.title.as_str())
                     .expect("Window title contained null byte");
                 let mut class_hints = {
-                    let class_hints = unsafe { (display.xlib.XAllocClassHint)() };
-                    util::XSmartPointer::new(&display, class_hints)
+                    let class_hints = unsafe { (xconn.xlib.XAllocClassHint)() };
+                    util::XSmartPointer::new(xconn, class_hints)
                 }.expect("XAllocClassHint returned null; out of memory");
                 (*class_hints).res_name = name.as_ptr() as *mut c_char;
                 (*class_hints).res_class = name.as_ptr() as *mut c_char;
                 unsafe {
-                    (display.xlib.XSetClassHint)(
-                        display.display,
+                    (xconn.xlib.XSetClassHint)(
+                        xconn.display,
                         x_window.window,
                         class_hints.ptr,
                     );
@@ -208,8 +215,8 @@ impl Window2 {
             // set size hints
             {
                 let mut size_hints = {
-                    let size_hints = unsafe { (display.xlib.XAllocSizeHints)() };
-                    util::XSmartPointer::new(&display, size_hints)
+                    let size_hints = unsafe { (xconn.xlib.XAllocSizeHints)() };
+                    util::XSmartPointer::new(xconn, size_hints)
                 }.expect("XAllocSizeHints returned null; out of memory");
                 (*size_hints).flags = ffi::PSize;
                 (*size_hints).width = dimensions.0 as c_int;
@@ -225,8 +232,8 @@ impl Window2 {
                     (*size_hints).max_height = dimensions.1 as c_int;
                 }
                 unsafe {
-                    (display.xlib.XSetWMNormalHints)(
-                        display.display,
+                    (xconn.xlib.XSetWMNormalHints)(
+                        xconn.display,
                         x_window.window,
                         size_hints.ptr,
                     );
@@ -235,8 +242,8 @@ impl Window2 {
 
             // Opt into handling window close
             unsafe {
-                (display.xlib.XSetWMProtocols)(
-                    display.display,
+                (xconn.xlib.XSetWMProtocols)(
+                    xconn.display,
                     x_window.window,
                     &ctx.wm_delete_window as *const _ as *mut _,
                     1,
@@ -246,15 +253,15 @@ impl Window2 {
             // Set visibility (map window)
             if window_attrs.visible {
                 unsafe {
-                    (display.xlib.XMapRaised)(display.display, x_window.window);
+                    (xconn.xlib.XMapRaised)(xconn.display, x_window.window);
                 }//.queue();
             }
 
             // Attempt to make keyboard input repeat detectable
             unsafe {
                 let mut supported_ptr = ffi::False;
-                (display.xlib.XkbSetDetectableAutoRepeat)(
-                    display.display,
+                (xconn.xlib.XkbSetDetectableAutoRepeat)(
+                    xconn.display,
                     ffi::True,
                     &mut supported_ptr,
                 );
@@ -283,10 +290,10 @@ impl Window2 {
             };
             unsafe {
                 util::select_xinput_events(
-                    display,
+                    xconn,
                     x_window.window,
                     ffi::XIAllMasterDevices,
-                    mask
+                    mask,
                 )
             }.queue();
 
@@ -301,14 +308,14 @@ impl Window2 {
                     // XSetInputFocus generates an error if the window is not visible, so we wait
                     // until we receive VisibilityNotify.
                     let mut event = mem::uninitialized();
-                    (display.xlib.XIfEvent)(
-                        display.display,
+                    (xconn.xlib.XIfEvent)(
+                        xconn.display,
                         &mut event as *mut ffi::XEvent,
                         Some(visibility_predicate),
                         x_window.window as _,
                     );
-                    (display.xlib.XSetInputFocus)(
-                        display.display,
+                    (xconn.xlib.XSetInputFocus)(
+                        xconn.display,
                         x_window.window,
                         ffi::RevertToParent,
                         ffi::CurrentTime,
