@@ -5,6 +5,7 @@
 - Corrected `get_position` on Windows to be relative to the screen rather than to the taskbar.
 - Corrected `Moved` event on Windows to use position values equivalent to those returned by `get_position`. It previously supplied client area positions instead of window positions, and would additionally interpret negative values as being very large (around `u16::MAX`).
 - Implemented `Moved` event on macOS.
+- On X11, all `Moved` events correctly use positions relative to the root window.
 - On Windows, implemented all variants of `DeviceEvent` other than `Text`. Mouse `DeviceEvent`s are now received even if the window isn't in the foreground.
 - `DeviceId` on Windows is no longer a unit struct, and now contains a `u32`. For `WindowEvent`s, this will always be 0, but on `DeviceEvent`s it will be the handle to that device. `DeviceIdExt::get_persistent_identifier` can be used to acquire a unique identifier for that device that persists across replugs/reboots/etc.
 - Corrected `run_forever` on X11 to stop discarding `Awakened` events.
@@ -28,8 +29,7 @@
 - Corrected `get_position` on macOS to return outer frame position, not content area position.
 - Corrected `set_position` on macOS to set outer frame position, not content area position.
 - Added `get_inner_position` method to `Window`, which gets the position of the window's client area. This is implemented on all applicable platforms (all desktop platforms other than Wayland, where this isn't possible).
-- **Breaking:** the `Closed` event has been replaced by `CloseRequested` and `Destroyed`. To migrate, you typically just need to replace all usages of `Closed` with `CloseRequested`; see example programs for more info. The exception is iOS, where `Closed` must be replaced by `Destroyed`
-- On X11, all `Moved` events correctly use positions relative to the root window..
+- **Breaking:** the `Closed` event has been replaced by `CloseRequested` and `Destroyed`. To migrate, you typically just need to replace all usages of `Closed` with `CloseRequested`; see example programs for more info. The exception is iOS, where `Closed` must be replaced by `Destroyed`.
 
 # Version 0.12.0 (2018-04-06)
 
