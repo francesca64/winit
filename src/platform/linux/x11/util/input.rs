@@ -33,8 +33,8 @@ impl From<ffi::XIModifierState> for ModifiersState {
     }
 }
 
-#[derive(Debug)]
-pub struct PointerState {
+pub struct PointerState<'a> {
+    xconn: &'a Arc<XConnection>,
     _root: ffi::Window,
     _child: ffi::Window,
     _root_x: c_double,
@@ -47,9 +47,18 @@ pub struct PointerState {
     _relative_to_window: bool,
 }
 
-impl PointerState {
+impl<'a> PointerState<'a> {
     pub fn get_modifier_state(&self) -> ModifiersState {
         self.modifiers.into()
+    }
+}
+
+impl<'a> Drop for PointerState<'a> {
+    fn drop(&mut self) {
+        unsafe {
+            // This is why you need to read the docs carefully...
+            (self.xconn.xlib.XFree)(self._buttons.mask as _);
+        }
     }
 }
 
@@ -86,6 +95,7 @@ pub unsafe fn query_pointer(
     xconn.check_errors()?;
 
     Ok(PointerState {
+        xconn,
         _root: root_return,
         _child: child_return,
         _root_x: root_x_return,
