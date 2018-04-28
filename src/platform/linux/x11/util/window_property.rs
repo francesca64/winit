@@ -1,3 +1,6 @@
+use std;
+use std::fmt::Debug;
+
 use super::*;
 
 #[derive(Debug, Clone)]
@@ -20,9 +23,9 @@ impl GetPropertyError {
 
 // Number of 32-bit chunks to retrieve per interation of get_property's inner loop.
 // To test if get_property works correctly, set this to 1.
-const PROPERTY_BUFFER_SIZE: c_long = 1024; // 4K of RAM ought to be enough for anyone!
+const PROPERTY_BUFFER_SIZE: c_long = 1024; // 4k of RAM ought to be enough for anyone!
 
-pub unsafe fn get_property<T>(
+pub unsafe fn get_property<T: Debug + Clone>(
     xconn: &Arc<XConnection>,
     window: c_ulong,
     property: ffi::Atom,
@@ -57,14 +60,6 @@ pub unsafe fn get_property<T>(
             &mut buf,
         );
 
-        println!(
-            "XGetWindowProperty fmt:{:02} len:{:02} off:{:02} out:{:02}",
-            mem::size_of::<T>() * 8,
-            data.len(),
-            offset,
-            quantity_returned,
-        );
-
         if let Err(e) = xconn.check_errors() {
             return Err(GetPropertyError::XError(e));
         }
@@ -84,12 +79,22 @@ pub unsafe fn get_property<T>(
 
         if !buf.is_null() {
             offset += PROPERTY_BUFFER_SIZE;
-            let mut buf = Vec::from_raw_parts(
+            let new_data = std::slice::from_raw_parts(
                 buf as *mut T,
                 quantity_returned as usize,
-                quantity_returned as usize,
             );
-            data.append(&mut buf);
+            println!(
+                "XGetWindowProperty prop:{:?} fmt:{:02} len:{:02} off:{:02} out:{:02}, buf:{:?}",
+                property,
+                mem::size_of::<T>() * 8,
+                data.len(),
+                offset,
+                quantity_returned,
+                new_data,
+            );
+            data.extend_from_slice(&new_data);
+            // Fun fact: XGetWindowProperty allocates one extra byte at the end.
+            (xconn.xlib.XFree)(buf as _); // Don't try to access new_data after this.
         } else {
             return Err(GetPropertyError::NothingAllocated);
         }
@@ -114,7 +119,7 @@ pub struct InvalidFormat {
     size_expected: usize,
 }
 
-pub unsafe fn change_property<'a, T>(
+pub unsafe fn change_property<'a, T: Debug>(
     xconn: &'a Arc<XConnection>,
     window: c_ulong,
     property: ffi::Atom,
@@ -143,6 +148,12 @@ pub unsafe fn change_property<'a, T>(
         mode as c_int,
         new_value.as_ptr() as *const c_uchar,
         new_value.len() as c_int,
+    );
+
+    println!(
+        "XChangeProperty prop:{:?} val:{:?}",
+        property,
+        new_value,
     );
 
     Flusher::new(xconn)

@@ -168,10 +168,11 @@ impl Window2 {
             shared_state: Arc::new(Mutex::new(SharedState::new())),
         };
 
-        // Title must be set before mapping, lest some tiling window managers briefly pick up on
-        // the initial un-titled window state
-        window.set_title(&window_attrs.title);
-        window.set_decorations(window_attrs.decorations);
+        // Title must be set before mapping. Some tiling window managers (i.e. i3) use the window
+        // title to determine placement/etc., so doing this after mapping would cause the WM to
+        // act on the wrong title state.
+        window.set_title_inner(&window_attrs.title).queue();
+        window.set_decorations_inner(window_attrs.decorations).queue();
 
         {
             let ref x_window: &XWindow = window.x.borrow();
@@ -298,10 +299,8 @@ impl Window2 {
             }.queue();
 
             // These properties must be set after mapping
-            window.set_maximized(window_attrs.maximized);
-            window.set_fullscreen(window_attrs.fullscreen.clone());
-            // Both of these methods flush internally, so we don't need to explicitly flush here.
-            // TODO: Create underlying methods so that we don't have to flush an extra time.
+            window.set_maximized_inner(window_attrs.maximized).queue();
+            window.set_fullscreen_inner(window_attrs.fullscreen.clone()).queue();
 
             if window_attrs.visible {
                 unsafe {
@@ -334,7 +333,7 @@ impl Window2 {
         root: ffi::Window,
         properties: (c_long, c_long, c_long, c_long),
         operation: util::StateOperation
-    ) {
+    ) -> util::Flusher {
         let state_atom = unsafe { util::get_atom(xconn, b"_NET_WM_STATE\0") }
             .expect("Failed to call XInternAtom (_NET_WM_STATE)");
 
@@ -353,23 +352,43 @@ impl Window2 {
                     properties.3,
                 )
             )
-        }.flush().expect("Failed to set _NET_WM_STATE");
+        }
     }
 
-    pub fn set_fullscreen(&self, monitor: Option<RootMonitorId>) {
+    fn set_fullscreen_hint(&self, fullscreen: bool) -> util::Flusher {
+        let xconn = &self.x.display;
+
+        let fullscreen_atom = unsafe { util::get_atom(xconn, b"_NET_WM_STATE_FULLSCREEN\0") }
+            .expect("Failed to call XInternAtom (_NET_WM_STATE_FULLSCREEN)");
+
+        Window2::set_netwm(
+            xconn,
+            self.x.window,
+            self.x.root,
+            (fullscreen_atom as c_long, 0, 0, 0),
+            fullscreen.into(),
+        )
+    }
+
+    fn set_fullscreen_inner(&self, monitor: Option<RootMonitorId>) -> util::Flusher {
         match monitor {
             None => {
-                self.set_fullscreen_hint(false);
+                self.set_fullscreen_hint(false)
             },
             Some(RootMonitorId { inner: PlatformMonitorId::X(monitor) }) => {
                 let screenpos = monitor.get_position();
                 self.set_position(screenpos.0 as i32, screenpos.1 as i32);
-                self.set_fullscreen_hint(true);
+                self.set_fullscreen_hint(true)
             }
-            _ => {
-                eprintln!("[winit] Something's broken, got an unknown fullscreen state in X11");
-            }
+            _ => unreachable!(),
         }
+    }
+
+    pub fn set_fullscreen(&self, monitor: Option<RootMonitorId>) {
+        self.set_fullscreen_inner(monitor)
+            .flush()
+            .expect("Failed to change window fullscreen state");
+        self.invalidate_cached_frame_extents();
     }
 
     pub fn get_current_monitor(&self) -> X11MonitorId {
@@ -409,7 +428,7 @@ impl Window2 {
         find
     }
 
-    pub fn set_maximized(&self, maximized: bool) {
+    fn set_maximized_inner(&self, maximized: bool) -> util::Flusher {
         let xconn = &self.x.display;
 
         let horz_atom = unsafe { util::get_atom(xconn, b"_NET_WM_STATE_MAXIMIZED_HORZ\0") }
@@ -423,29 +442,17 @@ impl Window2 {
             self.x.root,
             (horz_atom as c_long, vert_atom as c_long, 0, 0),
             maximized.into(),
-        );
+        )
+    }
 
+    pub fn set_maximized(&self, maximized: bool) {
+        self.set_maximized_inner(maximized)
+            .flush()
+            .expect("Failed to change window maximization");
         self.invalidate_cached_frame_extents();
     }
 
-    fn set_fullscreen_hint(&self, fullscreen: bool) {
-        let xconn = &self.x.display;
-
-        let fullscreen_atom = unsafe { util::get_atom(xconn, b"_NET_WM_STATE_FULLSCREEN\0") }
-            .expect("Failed to call XInternAtom (_NET_WM_STATE_FULLSCREEN)");
-
-        Window2::set_netwm(
-            xconn,
-            self.x.window,
-            self.x.root,
-            (fullscreen_atom as c_long, 0, 0, 0),
-            fullscreen.into(),
-        );
-
-        self.invalidate_cached_frame_extents();
-    }
-
-    pub fn set_title(&self, title: &str) {
+    fn set_title_inner(&self, title: &str) -> util::Flusher {
         let xconn = &self.x.display;
 
         let wm_name_atom = unsafe { util::get_atom(xconn, b"_NET_WM_NAME\0") }
@@ -470,10 +477,16 @@ impl Window2 {
                 util::PropMode::Replace,
                 title.as_bytes_with_nul(),
             )
-        }.flush().expect("Failed to set window title");
+        }
     }
 
-    pub fn set_decorations(&self, decorations: bool) {
+    pub fn set_title(&self, title: &str) {
+        self.set_title_inner(title)
+            .flush()
+            .expect("Failed to set window title");
+    }
+
+    fn set_decorations_inner(&self, decorations: bool) -> util::Flusher {
         let xconn = &self.x.display;
 
         let wm_hints = unsafe { util::get_atom(xconn, b"_MOTIF_WM_HINTS\0") }
@@ -495,24 +508,29 @@ impl Window2 {
                     0, // status
                 ],
             )
-        }.flush().expect("Failed to set decorations");
+        }
+    }
 
+    pub fn set_decorations(&self, decorations: bool) {
+        self.set_decorations_inner(decorations)
+            .flush()
+            .expect("Failed to set decoration state");
         self.invalidate_cached_frame_extents();
     }
 
     pub fn show(&self) {
         unsafe {
             (self.x.display.xlib.XMapRaised)(self.x.display.display, self.x.window);
-            (self.x.display.xlib.XFlush)(self.x.display.display);
-            self.x.display.check_errors().expect("Failed to call XMapRaised");
+            util::flush_requests(&self.x.display)
+                .expect("Failed to call XMapRaised");
         }
     }
 
     pub fn hide(&self) {
         unsafe {
             (self.x.display.xlib.XUnmapWindow)(self.x.display.display, self.x.window);
-            (self.x.display.xlib.XFlush)(self.x.display.display);
-            self.x.display.check_errors().expect("Failed to call XUnmapWindow");
+            util::flush_requests(&self.x.display)
+                .expect("Failed to call XUnmapWindow");
         }
     }
 
@@ -592,8 +610,8 @@ impl Window2 {
         if let Some(_) = inner_size {
             inner_size
         } else {
-            // This case will never really be entered, unless you're doing something weird like
-            // not running the event loop.
+            // This case will only be entered if the event loop isn't running.
+            // TODO: Always run this if event loop isn't running
             let inner_size = unsafe { util::get_geometry(&self.x.display, self.x.window) }
                 .ok()
                 .map(|geo| (geo.width, geo.height));

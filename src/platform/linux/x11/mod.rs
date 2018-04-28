@@ -107,9 +107,16 @@ impl EventsLoop {
         unsafe {
             let mut xinput_major_ver = ffi::XI_2_Major;
             let mut xinput_minor_ver = ffi::XI_2_Minor;
-
-            if (display.xinput2.XIQueryVersion)(display.display, &mut xinput_major_ver, &mut xinput_minor_ver) != ffi::Success as libc::c_int {
-                panic!("X server has XInput extension {}.{} but does not support XInput2", xinput_major_ver, xinput_minor_ver);
+            if (display.xinput2.XIQueryVersion)(
+                display.display,
+                &mut xinput_major_ver,
+                &mut xinput_minor_ver,
+            ) != ffi::Success as libc::c_int {
+                panic!(
+                    "X server has XInput extension {}.{} but does not support XInput2",
+                    xinput_major_ver,
+                    xinput_minor_ver,
+                );
             }
         }
 
@@ -119,8 +126,17 @@ impl EventsLoop {
         let wakeup_dummy_window = unsafe {
             let (x, y, w, h) = (10, 10, 10, 10);
             let (border_w, border_px, background_px) = (0, 0, 0);
-            (display.xlib.XCreateSimpleWindow)(display.display, root, x, y, w, h,
-                                               border_w, border_px, background_px)
+            (display.xlib.XCreateSimpleWindow)(
+                display.display,
+                root,
+                x,
+                y,
+                w,
+                h,
+                border_w,
+                border_px,
+                background_px,
+            )
         };
 
         let result = EventsLoop {
@@ -145,9 +161,9 @@ impl EventsLoop {
                 &result.display,
                 root,
                 ffi::XIAllDevices,
-                ffi::XI_HierarchyChangedMask
+                ffi::XI_HierarchyChangedMask,
             )
-        }.flush().expect("Failed to register for hotplug events");
+        }.queue(); // The request buffer is flushed during init_device
 
         result.init_device(ffi::XIAllDevices);
 

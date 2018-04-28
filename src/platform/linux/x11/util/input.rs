@@ -118,35 +118,41 @@ unsafe fn lookup_utf8_inner(
     (keysym, status, count)
 }
 
+// A base buffer size of 1kB uses a negligible amount of RAM while preventing us from having to
+// re-allocate (and make another round-trip) in the *vast* majority of cases.
+// To test if lookup_utf8 works correctly, set this to 1.
+const TEXT_BUFFER_SIZE: usize = 1024;
+
 pub unsafe fn lookup_utf8(
     xconn: &Arc<XConnection>,
     ic: ffi::XIC,
     key_event: &mut ffi::XKeyEvent,
 ) -> String {
-    const INIT_BUFF_SIZE: usize = 16;
-
-    // Buffer allocated on heap instead of stack, due to the possible reallocation
-    let mut buffer: Vec<u8> = vec![mem::uninitialized(); INIT_BUFF_SIZE];
-    let (_, status, mut count) = lookup_utf8_inner(
+    let mut buffer: [u8; TEXT_BUFFER_SIZE] = mem::uninitialized();
+    let (_, status, count) = lookup_utf8_inner(
         xconn,
         ic,
         key_event,
         &mut buffer,
     );
 
-    // Buffer overflowed, dynamically reallocate
+    // The buffer overflowed, so we'll make a new one on the heap.
     if status == ffi::XBufferOverflow {
-        buffer = vec![mem::uninitialized(); count as usize];
+        let mut buffer = Vec::with_capacity(count as usize);
+        buffer.set_len(count as usize);
         let (_, _, new_count) = lookup_utf8_inner(
             xconn,
             ic,
             key_event,
             &mut buffer,
         );
-        count = new_count;
+        debug_assert_eq!(count, new_count);
+        str::from_utf8(&buffer[..count as usize])
+            .unwrap_or("")
+            .to_string()
+    } else {
+        str::from_utf8(&buffer[..count as usize])
+            .unwrap_or("")
+            .to_string()
     }
-
-    str::from_utf8(&buffer[..count as usize])
-        .unwrap_or("")
-        .to_string()
 }
