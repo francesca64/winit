@@ -5,7 +5,7 @@ pub const MWM_HINTS_DECORATIONS: c_ulong = 2;
 #[derive(Debug)]
 pub enum StateOperation {
     Remove = 0, // _NET_WM_STATE_REMOVE
-    Add = 1, // _NET_WM_STATE_ADD
+    Add = 1,    // _NET_WM_STATE_ADD
     #[allow(dead_code)]
     Toggle = 2, // _NET_WM_STATE_TOGGLE
 }

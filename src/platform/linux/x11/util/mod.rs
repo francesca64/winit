@@ -1,3 +1,6 @@
+// Welcome to the util module, where we try to keep you from shooting yourself in the foot.
+// *results may vary
+
 mod atom;
 mod geometry;
 mod hint;
@@ -106,6 +109,7 @@ impl<'a, T> Drop for XSmartPointer<'a, T> {
 // 3. XSync flushes and blocks until all requests are responded to
 // 4. Calls that have a return dependent on a response (i.e. XGetWindowProperty) sync internally.
 //    When in doubt, check the X11 source; if a function calls _XReply, it flushes and waits.
+// All util functions that abstract an async function will return a Flusher.
 pub unsafe fn flush_requests(xconn: &Arc<XConnection>) -> Result<(), XError> {
     (xconn.xlib.XFlush)(xconn.display);
     // This isn't necessarily a useful time to check for errors (since our request hasn't
@@ -113,14 +117,33 @@ pub unsafe fn flush_requests(xconn: &Arc<XConnection>) -> Result<(), XError> {
     xconn.check_errors()
 }
 
+#[must_use = "This request was made asynchronously, and is still in the output buffer. You must explicitly choose to either `.flush()` (empty the output buffer, sending the request now) or `.queue()` (wait to send the request, allowing you to continue to add more requests without additional round-trips). For more information, see the documentation for `util::flush_requests`."]
+pub struct Flusher<'a> {
+    xconn: &'a Arc<XConnection>,
+}
+
+impl<'a> Flusher<'a> {
+    pub fn new(xconn: &'a Arc<XConnection>) -> Self {
+        Flusher { xconn }
+    }
+
+    // "I want this request sent now!"
+    pub fn flush(self) -> Result<(), XError> {
+        unsafe { flush_requests(self.xconn) }
+    }
+
+    // "I'm aware that this request hasn't been sent, and I'm okay with waiting."
+    pub fn queue(self) {}
+}
+
 pub unsafe fn send_client_msg(
     xconn: &Arc<XConnection>,
-    window: c_ulong,        // the window this is "about"; not necessarily this window
-    target_window: c_ulong, // the window we're sending to
+    window: c_ulong,        // The window this is "about"; not necessarily this window
+    target_window: c_ulong, // The window we're sending to
     message_type: ffi::Atom,
     event_mask: Option<c_long>,
     data: (c_long, c_long, c_long, c_long, c_long),
-) -> Result<(), XError> {
+) -> Flusher {
     let mut event: ffi::XClientMessageEvent = mem::uninitialized();
     event.type_ = ffi::ClientMessage;
     event.display = xconn.display;
@@ -144,7 +167,5 @@ pub unsafe fn send_client_msg(
         &mut event.into(),
     );
 
-    // Since XSendEvent doesn't return, we need to flush!
-    // (assuming we want it sent *now*)
-    flush_requests(xconn)
+    Flusher::new(xconn)
 }

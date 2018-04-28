@@ -147,7 +147,7 @@ impl EventsLoop {
                 ffi::XIAllDevices,
                 ffi::XI_HierarchyChangedMask
             )
-        }.expect("Failed to register for hotplug events");
+        }.flush().expect("Failed to register for hotplug events");
 
         result.init_device(ffi::XIAllDevices);
 
@@ -1011,8 +1011,8 @@ impl EventsLoopProxy {
                 0,
                 None,
                 (0, 0, 0, 0, 0),
-            ).expect("Failed to call XSendEvent after wakeup");
-        }
+            )
+        }.flush().expect("Failed to call XSendEvent after wakeup");
 
         Ok(())
     }

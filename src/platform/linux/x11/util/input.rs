@@ -8,7 +8,7 @@ pub unsafe fn select_xinput_events(
     window: c_ulong,
     device_id: c_int,
     mask: i32,
-) -> Result<(), XError> {
+) -> Flusher {
     let mut event_mask = ffi::XIEventMask {
         deviceid: device_id,
         mask: &mask as *const _ as *mut c_uchar,
@@ -20,7 +20,7 @@ pub unsafe fn select_xinput_events(
         &mut event_mask as *mut ffi::XIEventMask,
         1, // number of masks to read from pointer above
     );
-    xconn.check_errors().map(|_| ())
+    Flusher::new(xconn)
 }
 
 impl From<ffi::XIModifierState> for ModifiersState {
@@ -157,5 +157,7 @@ pub unsafe fn lookup_utf8(
         count = new_count;
     }
 
-    str::from_utf8(&buffer[..count as usize]).unwrap_or("").to_string()
+    str::from_utf8(&buffer[..count as usize])
+        .unwrap_or("")
+        .to_string()
 }

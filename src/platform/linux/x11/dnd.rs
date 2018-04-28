@@ -134,7 +134,7 @@ impl Dnd {
             self.atoms.status,
             None,
             (this_window as c_long, accepted, 0, 0, action),
-        )
+        ).flush()
     }
 
     pub unsafe fn send_finished(
@@ -154,7 +154,7 @@ impl Dnd {
             self.atoms.finished,
             None,
             (this_window as c_long, accepted, action, 0, 0),
-        )
+        ).flush()
     }
 
     pub unsafe fn get_type_list(

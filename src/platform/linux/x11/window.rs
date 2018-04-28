@@ -7,8 +7,6 @@ use std::{mem, cmp};
 use std::sync::{Arc, Mutex};
 use std::os::raw::*;
 use std::ffi::CString;
-use std::thread;
-use std::time::Duration;
 
 use CursorState;
 use WindowAttributes;
@@ -21,6 +19,16 @@ use window::MonitorId as RootMonitorId;
 use platform::x11::monitor::get_available_monitors;
 
 use super::{ffi, util, XConnection, XError, WindowId, EventsLoop};
+
+unsafe extern "C" fn visibility_predicate(
+    _display: *mut ffi::Display,
+    event: *mut ffi::XEvent,
+    arg: ffi::XPointer, // We populate this with the window ID (by value) when we call XIfEvent
+) -> ffi::Bool {
+    let event: &ffi::XAnyEvent = (*event).as_ref();
+    let window = arg as ffi::Window;
+    (event.window == window && event.type_ == ffi::VisibilityNotify) as _
+}
 
 pub struct XWindow {
     pub display: Arc<XConnection>,
@@ -174,8 +182,8 @@ impl Window2 {
                     util::Format::Long,
                     util::PropMode::Replace,
                     version,
-                ).expect("Failed to announce drag and drop awareness");
-            }
+                )
+            }.queue();
 
             // Set ICCCM WM_CLASS property based on initial window title
             // Must be done *before* mapping the window by ICCCM 4.1.2.5
@@ -194,8 +202,7 @@ impl Window2 {
                         x_window.window,
                         class_hints.ptr,
                     );
-                }
-                display.check_errors().expect("Failed to call XSetClassHint");
+                }//.queue();
             }
 
             // set size hints
@@ -223,28 +230,34 @@ impl Window2 {
                         x_window.window,
                         size_hints.ptr,
                     );
-                }
-                display.check_errors().expect("Failed to call XSetWMNormalHints");
+                }//.queue();
             }
 
             // Opt into handling window close
             unsafe {
-                (display.xlib.XSetWMProtocols)(display.display, x_window.window, &ctx.wm_delete_window as *const _ as *mut _, 1);
-                display.check_errors().expect("Failed to call XSetWMProtocols");
-            }
+                (display.xlib.XSetWMProtocols)(
+                    display.display,
+                    x_window.window,
+                    &ctx.wm_delete_window as *const _ as *mut _,
+                    1,
+                );
+            }//.queue();
 
             // Set visibility (map window)
             if window_attrs.visible {
                 unsafe {
                     (display.xlib.XMapRaised)(display.display, x_window.window);
-                }
-                display.check_errors().expect("Failed to set window visibility");
+                }//.queue();
             }
 
             // Attempt to make keyboard input repeat detectable
             unsafe {
                 let mut supported_ptr = ffi::False;
-                (display.xlib.XkbSetDetectableAutoRepeat)(display.display, ffi::True, &mut supported_ptr);
+                (display.xlib.XkbSetDetectableAutoRepeat)(
+                    display.display,
+                    ffi::True,
+                    &mut supported_ptr,
+                );
                 if supported_ptr == ffi::False {
                     return Err(OsError(format!("XkbSetDetectableAutoRepeat failed")));
                 }
@@ -275,35 +288,31 @@ impl Window2 {
                     ffi::XIAllMasterDevices,
                     mask
                 )
-            }.expect("Failed to select XInput2 events for window");
+            }.queue();
 
             // These properties must be set after mapping
             window.set_maximized(window_attrs.maximized);
             window.set_fullscreen(window_attrs.fullscreen.clone());
+            // Both of these methods flush internally, so we don't need to explicitly flush here.
+            // TODO: Create underlying methods so that we don't have to flush an extra time.
 
             if window_attrs.visible {
                 unsafe {
-                    // XSetInputFocus generates an error if the window is not visible,
-                    // therefore we wait until it's the case.
-                    loop {
-                        let mut window_attributes = mem::uninitialized();
-                        (display.xlib.XGetWindowAttributes)(display.display, x_window.window, &mut window_attributes);
-                        display.check_errors().expect("Failed to call XGetWindowAttributes");
-
-                        if window_attributes.map_state == ffi::IsViewable {
-                            (display.xlib.XSetInputFocus)(
-                                display.display,
-                                x_window.window,
-                                ffi::RevertToParent,
-                                ffi::CurrentTime
-                            );
-                            display.check_errors().expect("Failed to call XSetInputFocus");
-                            break;
-                        }
-
-                        // Wait about a frame to avoid too-busy waiting
-                        thread::sleep(Duration::from_millis(16));
-                    }
+                    // XSetInputFocus generates an error if the window is not visible, so we wait
+                    // until we receive VisibilityNotify.
+                    let mut event = mem::uninitialized();
+                    (display.xlib.XIfEvent)(
+                        display.display,
+                        &mut event as *mut ffi::XEvent,
+                        Some(visibility_predicate),
+                        x_window.window as _,
+                    );
+                    (display.xlib.XSetInputFocus)(
+                        display.display,
+                        x_window.window,
+                        ffi::RevertToParent,
+                        ffi::CurrentTime,
+                    );
                 }
             }
         }
@@ -337,7 +346,7 @@ impl Window2 {
                     properties.3,
                 )
             )
-        }.expect("Failed to send NET_WM hint.");
+        }.flush().expect("Failed to set _NET_WM_STATE");
     }
 
     pub fn set_fullscreen(&self, monitor: Option<RootMonitorId>) {
@@ -454,7 +463,7 @@ impl Window2 {
                 util::PropMode::Replace,
                 title.as_bytes_with_nul(),
             )
-        }.expect("Failed to set window title");
+        }.flush().expect("Failed to set window title");
     }
 
     pub fn set_decorations(&self, decorations: bool) {
@@ -479,7 +488,7 @@ impl Window2 {
                     0, // status
                 ],
             )
-        }.expect("Failed to set decorations");
+        }.flush().expect("Failed to set decorations");
 
         self.invalidate_cached_frame_extents();
     }

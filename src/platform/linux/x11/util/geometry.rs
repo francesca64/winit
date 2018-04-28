@@ -1,6 +1,5 @@
 use super::*;
 
-
 #[derive(Debug)]
 pub struct TranslatedCoords {
     pub x_rel_root: c_int,
@@ -152,9 +151,7 @@ pub fn is_top_level(
         )
     }.ok();
 
-    client_list.map(|client_list| {
-        client_list.contains(&window)
-    })
+    client_list.map(|client_list| client_list.contains(&window))
 }
 
 unsafe fn get_parent_window(

@@ -25,10 +25,7 @@ pub fn update_cached_wm_info(xconn: &Arc<XConnection>, root: ffi::Window) {
     *WM_NAME.lock().unwrap() = self::get_wm_name(xconn, root);
 }
 
-fn get_supported_hints(
-    xconn: &Arc<XConnection>,
-    root: ffi::Window,
-) -> Vec<ffi::Atom> {
+fn get_supported_hints(xconn: &Arc<XConnection>, root: ffi::Window) -> Vec<ffi::Atom> {
     let supported_atom = unsafe { self::get_atom(xconn, b"_NET_SUPPORTED\0") }
         .expect("Failed to call XInternAtom (_NET_SUPPORTED)");
     unsafe {

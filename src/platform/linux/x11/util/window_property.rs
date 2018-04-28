@@ -110,30 +110,30 @@ pub enum PropMode {
 }
 
 #[derive(Debug, Clone)]
-pub enum ChangePropertyError {
-    XError(XError),
-    FormatError {
-        format_used: Format,
-        size_passed: usize,
-        size_expected: usize,
-    },
+pub struct InvalidFormat {
+    format_used: Format,
+    size_passed: usize,
+    size_expected: usize,
 }
 
-pub unsafe fn change_property<T>(
-    xconn: &Arc<XConnection>,
+pub unsafe fn change_property<'a, T>(
+    xconn: &'a Arc<XConnection>,
     window: c_ulong,
     property: ffi::Atom,
     property_type: ffi::Atom,
     format: Format,
     mode: PropMode,
     new_value: &[T],
-) -> Result<(), ChangePropertyError> {
+) -> Flusher<'a> {
     if !format.is_same_size_as::<T>() {
-        return Err(ChangePropertyError::FormatError {
-            format_used: format,
-            size_passed: mem::size_of::<T>() * 8,
-            size_expected: format.get_actual_size() * 8,
-        });
+        panic!(format!(
+            "[winit developer error] Incorrect usage of `util::change_property`: {:#?}",
+            InvalidFormat {
+                format_used: format,
+                size_passed: mem::size_of::<T>() * 8,
+                size_expected: format.get_actual_size() * 8,
+            },
+        ));
     }
 
     (xconn.xlib.XChangeProperty)(
@@ -147,9 +147,5 @@ pub unsafe fn change_property<T>(
         new_value.len() as c_int,
     );
 
-    if let Err(e) = self::flush_requests(xconn) {
-        Err(ChangePropertyError::XError(e))
-    } else {
-        Ok(())
-    }
+    Flusher::new(xconn)
 }
