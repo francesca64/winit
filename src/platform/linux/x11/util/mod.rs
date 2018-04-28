@@ -146,5 +146,5 @@ pub unsafe fn send_client_msg(
 
     // Since XSendEvent doesn't return, we need to flush!
     // (assuming we want it sent *now*)
-    flush_requests()
+    flush_requests(xconn)
 }

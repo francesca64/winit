@@ -147,7 +147,7 @@ pub unsafe fn change_property<T>(
         new_value.len() as c_int,
     );
 
-    if let Err(e) = xconn.check_errors() {
+    if let Err(e) = self::flush_requests(xconn) {
         Err(ChangePropertyError::XError(e))
     } else {
         Ok(())
