@@ -1,5 +1,3 @@
-use std::mem;
-
 use super::*;
 use events::ModifiersState;
 
@@ -37,25 +35,16 @@ impl From<ffi::XIModifierState> for ModifiersState {
 
 #[derive(Debug)]
 pub struct PointerState {
-    #[allow(dead_code)]
-    root: ffi::Window,
-    #[allow(dead_code)]
-    child: ffi::Window,
-    #[allow(dead_code)]
-    root_x: c_double,
-    #[allow(dead_code)]
-    root_y: c_double,
-    #[allow(dead_code)]
-    win_x: c_double,
-    #[allow(dead_code)]
-    win_y: c_double,
-    #[allow(dead_code)]
-    buttons: ffi::XIButtonState,
+    _root: ffi::Window,
+    _child: ffi::Window,
+    _root_x: c_double,
+    _root_y: c_double,
+    _win_x: c_double,
+    _win_y: c_double,
+    _buttons: ffi::XIButtonState,
     modifiers: ffi::XIModifierState,
-    #[allow(dead_code)]
-    group: ffi::XIGroupState,
-    #[allow(dead_code)]
-    relative_to_window: bool,
+    _group: ffi::XIGroupState,
+    _relative_to_window: bool,
 }
 
 impl PointerState {
@@ -97,16 +86,16 @@ pub unsafe fn query_pointer(
     xconn.check_errors()?;
 
     Ok(PointerState {
-        root: root_return,
-        child: child_return,
-        root_x: root_x_return,
-        root_y: root_y_return,
-        win_x: win_x_return,
-        win_y: win_y_return,
-        buttons: buttons_return,
+        _root: root_return,
+        _child: child_return,
+        _root_x: root_x_return,
+        _root_y: root_y_return,
+        _win_x: win_x_return,
+        _win_y: win_y_return,
+        _buttons: buttons_return,
         modifiers: modifiers_return,
-        group: group_return,
-        relative_to_window,
+        _group: group_return,
+        _relative_to_window: relative_to_window,
     })
 }
 

@@ -103,10 +103,8 @@ pub unsafe fn get_property<T>(
 #[derive(Debug)]
 pub enum PropMode {
     Replace = ffi::PropModeReplace as isize,
-    #[allow(dead_code)]
-    Prepend = ffi::PropModePrepend as isize,
-    #[allow(dead_code)]
-    Append = ffi::PropModeAppend as isize,
+    _Prepend = ffi::PropModePrepend as isize,
+    _Append = ffi::PropModeAppend as isize,
 }
 
 #[derive(Debug, Clone)]

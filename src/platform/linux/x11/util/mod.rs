@@ -31,7 +31,6 @@ use super::{ffi, XConnection, XError};
 #[derive(Debug, Copy, Clone)]
 pub enum Format {
     Char = 8,
-    #[allow(dead_code)]
     Short = 16,
     Long = 32,
 }
