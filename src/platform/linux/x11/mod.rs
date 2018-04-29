@@ -187,6 +187,8 @@ impl EventsLoop {
     pub fn poll_events<F>(&mut self, mut callback: F)
         where F: FnMut(Event)
     {
+        self.init_shared_state();
+
         let mut xev = unsafe { mem::uninitialized() };
         loop {
             // Get next event
@@ -201,11 +203,15 @@ impl EventsLoop {
             }
             self.process_event(&mut xev, &mut callback);
         }
+
+        self.reset_shared_state();
     }
 
     pub fn run_forever<F>(&mut self, mut callback: F)
         where F: FnMut(Event) -> ControlFlow
     {
+        self.init_shared_state();
+
         let mut xev = unsafe { mem::uninitialized() };
 
         loop {
@@ -227,6 +233,20 @@ impl EventsLoop {
             if let ControlFlow::Break = control_flow {
                 break;
             }
+        }
+
+        self.reset_shared_state();
+    }
+
+    fn init_shared_state(&mut self) {
+        for window_state in self.shared_state.borrow_mut().values() {
+            (*window_state.lock().unwrap()).event_loop_is_running = true;
+        }
+    }
+
+    fn reset_shared_state(&mut self) {
+        for window_state in self.shared_state.borrow_mut().values() {
+            window_state.lock().unwrap().reset()
         }
     }
 

@@ -43,20 +43,21 @@ unsafe impl Sync for XWindow {}
 unsafe impl Send for Window2 {}
 unsafe impl Sync for Window2 {}
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct SharedState {
+    pub event_loop_is_running: bool,
     pub frame_extents: Option<util::FrameExtentsHeuristic>,
     pub inner_position: Option<(i32, i32)>,
     pub inner_size: Option<(u32, u32)>,
 }
 
 impl SharedState {
-    fn new() -> Self {
-        SharedState {
-            frame_extents: None,
-            inner_position: None,
-            inner_size: None,
-        }
+    pub fn reset(&mut self) {
+        let mut new = Self::default();
+        // We retain the frame extents, since those aren't typically updated in the event loop.
+        // The exception is the WM being replaced.
+        mem::swap(&mut new.frame_extents, &mut self.frame_extents);
+        *self = new;
     }
 }
 
@@ -165,7 +166,7 @@ impl Window2 {
             x: x_window,
             cursor: Mutex::new(MouseCursor::Default),
             cursor_state: Mutex::new(CursorState::Normal),
-            shared_state: Arc::new(Mutex::new(SharedState::new())),
+            shared_state: Arc::new(Mutex::new(SharedState::default())),
         };
 
         // Title must be set before mapping. Some tiling window managers (i.e. i3) use the window
@@ -563,20 +564,22 @@ impl Window2 {
     #[inline]
     pub fn get_inner_position(&self) -> Option<(i32, i32)> {
         let mut shared_state_lock = self.shared_state.lock().unwrap();
-        let inner_position = (*shared_state_lock).inner_position.clone();
-        if let Some(_) = inner_position {
-            inner_position
-        } else {
-            // This case will never really be entered, unless you're doing something weird like
-            // not running the event loop.
-            let inner_position = unsafe { util::translate_coords(
-                &self.x.display,
-                self.x.window,
-                self.x.root,
-            ) }.ok().map(|coords| (coords.x_rel_root, coords.y_rel_root));
-            (*shared_state_lock).inner_position = inner_position.clone();
-            inner_position
+        if (*shared_state_lock).event_loop_is_running {
+            let inner_position = (*shared_state_lock).inner_position.clone();
+            if let Some(_) = inner_position {
+                return inner_position;
+            }
         }
+        // This case will only be entered if the event loop isn't running.
+        // In order to take advantage of caching in a single-threaded app, you have to only query
+        // position/size from within the event loop callback.
+        let inner_position = unsafe { util::translate_coords(
+            &self.x.display,
+            self.x.window,
+            self.x.root,
+        ) }.ok().map(|coords| (coords.x_rel_root, coords.y_rel_root));
+        (*shared_state_lock).inner_position = inner_position.clone();
+        inner_position
     }
 
     pub fn set_position(&self, mut x: i32, mut y: i32) {
@@ -606,18 +609,18 @@ impl Window2 {
     #[inline]
     pub fn get_inner_size(&self) -> Option<(u32, u32)> {
         let mut shared_state_lock = self.shared_state.lock().unwrap();
-        let inner_size = (*shared_state_lock).inner_size.clone();
-        if let Some(_) = inner_size {
-            inner_size
-        } else {
-            // This case will only be entered if the event loop isn't running.
-            // TODO: Always run this if event loop isn't running
-            let inner_size = unsafe { util::get_geometry(&self.x.display, self.x.window) }
-                .ok()
-                .map(|geo| (geo.width, geo.height));
-            (*shared_state_lock).inner_size = inner_size.clone();
-            inner_size
+        if (*shared_state_lock).event_loop_is_running {
+            let inner_size = (*shared_state_lock).inner_size.clone();
+            if let Some(_) = inner_size {
+                return inner_size;
+            }
         }
+        // This case will only be entered if the event loop isn't running.
+        let inner_size = unsafe { util::get_geometry(&self.x.display, self.x.window) }
+            .ok()
+            .map(|geo| (geo.width, geo.height));
+        (*shared_state_lock).inner_size = inner_size.clone();
+        inner_size
     }
 
     #[inline]
