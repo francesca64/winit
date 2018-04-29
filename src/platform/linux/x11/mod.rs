@@ -457,6 +457,13 @@ impl EventsLoop {
                             }
                         }
 
+                        if !is_synthetic
+                        && window_data.config.inner_position != Some(new_position) {
+                            window_data.config.inner_position = Some(new_position);
+                            // This way, we get sent Moved when the decorations are toggled.
+                            window_data.config.position = None;
+                        }
+
                         (resized, moved)
                     } else {
                         return;
@@ -1196,6 +1203,7 @@ unsafe impl Send for WindowData {}
 struct WindowConfig {
     pub size: Option<(c_int, c_int)>,
     pub position: Option<(c_int, c_int)>,
+    pub inner_position: Option<(c_int, c_int)>,
 }
 
 /// XEvents of type GenericEvent store their actual data in an XGenericEventCookie data structure. This is a wrapper to
