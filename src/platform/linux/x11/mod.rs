@@ -412,40 +412,48 @@ impl EventsLoop {
                 let xev: &ffi::XConfigureEvent = xev.as_ref();
 
                 // So apparently...
-                // XSendEvent -> position relative to root
-                // XConfigureNotify -> position relative to parent
+                // XSendEvent (synthetic ConfigureNotify) -> position relative to root
+                // XConfigureNotify (real ConfigureNotify) -> position relative to parent
                 // https://tronche.com/gui/x/icccm/sec-4.html#s-4.1.5
-                // In practice, this discards an extraneous Moved event after resizing that has a
-                // position relative to the parent window.
-                if xev.send_event == ffi::False {
-                    return;
-                }
+                // We don't want to send Moved when this is true, since then every Resized
+                // (whether the window moved or not) is accompanied by an extraneous Moved event
+                // that has a position relative to the parent window.
+                let is_synthetic = xev.send_event == ffi::True;
 
                 let window = xev.window;
                 let window_id = mkwid(window);
 
                 let new_size = (xev.width, xev.height);
                 let new_position = (xev.x, xev.y);
-                // Gymnastics to ensure self.windows isn't locked when we invoke callback
+
                 let (resized, moved) = {
                     let mut windows = self.windows.lock().unwrap();
                     if let Some(window_data) = windows.get_mut(&WindowId(window)) {
-                        if window_data.config.is_none() {
-                            window_data.config = Some(WindowConfig::new(xev));
-                            (true, true)
-                        } else {
-                            let window_state = window_data.config.as_mut().unwrap();
-                            (if window_state.size != new_size {
-                                window_state.size = new_size;
-                                true
-                            } else {
-                                false
-                            },
-                            if window_state.position != new_position {
-                                window_state.position = new_position;
-                                true
-                            } else { false })
+                        let (mut resized, mut moved) = (false, false);
+
+                        if window_data.config.size.is_none() {
+                            window_data.config.size = Some(new_size);
+                            resized = true;
                         }
+                        if window_data.config.size.is_none() && is_synthetic {
+                            window_data.config.position = Some(new_position);
+                            moved = true;
+                        }
+
+                        if !resized {
+                            if window_data.config.size != Some(new_size) {
+                                window_data.config.size = Some(new_size);
+                                resized = true;
+                            }
+                        }
+                        if !moved && is_synthetic {
+                            if window_data.config.position != Some(new_position) {
+                                window_data.config.position = Some(new_position);
+                                moved = true;
+                            }
+                        }
+
+                        (resized, moved)
                     } else {
                         return;
                     }
@@ -1126,7 +1134,7 @@ impl Window {
             .expect("Failed to create input context");
 
         x_events_loop.windows.lock().unwrap().insert(win.id(), WindowData {
-            config: None,
+            config: Default::default(),
             multitouch: window.multitouch,
             cursor_pos: None,
         });
@@ -1167,8 +1175,9 @@ impl Drop for Window {
 }
 
 /// State maintained for translating window-related events
+#[derive(Debug)]
 struct WindowData {
-    config: Option<WindowConfig>,
+    config: WindowConfig,
     multitouch: bool,
     cursor_pos: Option<(f64, f64)>,
 }
@@ -1176,20 +1185,11 @@ struct WindowData {
 // Required by ffi members
 unsafe impl Send for WindowData {}
 
+#[derive(Debug, Default)]
 struct WindowConfig {
-    size: (c_int, c_int),
-    position: (c_int, c_int),
+    pub size: Option<(c_int, c_int)>,
+    pub position: Option<(c_int, c_int)>,
 }
-
-impl WindowConfig {
-    fn new(event: &ffi::XConfigureEvent) -> Self {
-        WindowConfig {
-            size: (event.width, event.height),
-            position: (event.x, event.y),
-        }
-    }
-}
-
 
 /// XEvents of type GenericEvent store their actual data in an XGenericEventCookie data structure. This is a wrapper to
 /// extract the cookie from a GenericEvent XEvent and release the cookie data once it has been processed

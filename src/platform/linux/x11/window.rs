@@ -178,7 +178,7 @@ impl Window2 {
         {
             let ref x_window: &XWindow = window.x.borrow();
 
-            // Enable drag and drop
+            // Enable drag and drop (TODO: extend API to make this toggleable)
             unsafe {
                 let dnd_aware_atom = util::get_atom(xconn, b"XdndAware\0")
                     .expect("Failed to call XInternAtom (XdndAware)");
@@ -308,7 +308,7 @@ impl Window2 {
                     // XSetInputFocus generates an error if the window is not visible, so we wait
                     // until we receive VisibilityNotify.
                     let mut event = mem::uninitialized();
-                    (xconn.xlib.XIfEvent)(
+                    (xconn.xlib.XIfEvent)( // This will flush the request buffer IF it blocks.
                         xconn.display,
                         &mut event as *mut ffi::XEvent,
                         Some(visibility_predicate),
@@ -324,8 +324,12 @@ impl Window2 {
             }
         }
 
-        // returning
-        Ok(window)
+        // We never want to give the user a broken window, since by then, it's too late to handle.
+        unsafe { util::sync_with_server(xconn) }
+            .map(|_| window)
+            .map_err(|x_err| OsError(
+                format!("X server returned error while building window: {:?}", x_err)
+            ))
     }
 
     fn set_netwm(

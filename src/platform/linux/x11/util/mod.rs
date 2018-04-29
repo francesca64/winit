@@ -117,7 +117,7 @@ pub unsafe fn flush_requests(xconn: &Arc<XConnection>) -> Result<(), XError> {
     xconn.check_errors()
 }
 
-pub unsafe fn _sync_with_server(xconn: &Arc<XConnection>) -> Result<(), XError> {
+pub unsafe fn sync_with_server(xconn: &Arc<XConnection>) -> Result<(), XError> {
     (xconn.xlib.XSync)(xconn.display, ffi::False);
     println!("XSync");
     xconn.check_errors()
