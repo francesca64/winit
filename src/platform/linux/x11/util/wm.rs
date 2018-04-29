@@ -1,4 +1,4 @@
-use std::sync::Mutex;
+use parking_lot::Mutex;
 
 use super::*;
 
@@ -9,11 +9,11 @@ lazy_static! {
 }
 
 pub fn hint_is_supported(hint: ffi::Atom) -> bool {
-    (*SUPPORTED_HINTS.lock().unwrap()).contains(&hint)
+    (*SUPPORTED_HINTS.lock()).contains(&hint)
 }
 
 pub fn wm_name_is_one_of(names: &[&str]) -> bool {
-    if let Some(ref name) = *WM_NAME.lock().unwrap() {
+    if let Some(ref name) = *WM_NAME.lock() {
         names.contains(&name.as_str())
     } else {
         false
@@ -21,8 +21,8 @@ pub fn wm_name_is_one_of(names: &[&str]) -> bool {
 }
 
 pub fn update_cached_wm_info(xconn: &Arc<XConnection>, root: ffi::Window) {
-    *SUPPORTED_HINTS.lock().unwrap() = self::get_supported_hints(xconn, root);
-    *WM_NAME.lock().unwrap() = self::get_wm_name(xconn, root);
+    *SUPPORTED_HINTS.lock() = self::get_supported_hints(xconn, root);
+    *WM_NAME.lock() = self::get_wm_name(xconn, root);
 }
 
 fn get_supported_hints(xconn: &Arc<XConnection>, root: ffi::Window) -> Vec<ffi::Atom> {

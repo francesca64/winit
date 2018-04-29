@@ -1,7 +1,8 @@
-use std::sync::Mutex;
 use std::collections::HashMap;
 use std::ffi::{CStr, CString};
 use std::os::raw::*;
+
+use parking_lot::Mutex;
 
 use super::*;
 
@@ -13,7 +14,7 @@ lazy_static! {
 
 pub unsafe fn get_atom(xconn: &Arc<XConnection>, name: &[u8]) -> Result<ffi::Atom, XError> {
     let name = CStr::from_bytes_with_nul_unchecked(name); // I trust you. Don't let me down.
-    let mut atom_cache_lock = ATOM_CACHE.lock().unwrap();
+    let mut atom_cache_lock = ATOM_CACHE.lock();
     let cached_atom = (*atom_cache_lock).get(name).cloned();
     if let Some(atom) = cached_atom {
         Ok(atom)

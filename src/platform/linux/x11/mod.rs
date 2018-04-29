@@ -12,7 +12,7 @@ use {CreationError, Event, EventsLoopClosed, WindowEvent, DeviceEvent,
 use events::ModifiersState;
 
 use std::{mem, ptr, slice};
-use std::sync::{Arc, Weak, Mutex};
+use std::sync::{Arc, Weak};
 use std::sync::atomic::{self, AtomicBool};
 use std::sync::mpsc;
 use std::cell::RefCell;
@@ -21,6 +21,7 @@ use std::ffi::CStr;
 use std::os::raw::{c_char, c_int, c_long, c_uchar, c_uint, c_ulong};
 
 use libc::{self, setlocale, LC_CTYPE};
+use parking_lot::Mutex;
 
 mod events;
 mod monitor;
@@ -241,7 +242,7 @@ impl EventsLoop {
     fn init_shared_state(&mut self) {
         for window_state in self.shared_state.borrow_mut().values() {
             if let Some(window_state) = window_state.upgrade() {
-                (*window_state.lock().unwrap()).event_loop_is_running = true;
+                (*window_state.lock()).event_loop_is_running = true;
             }
         }
     }
@@ -249,7 +250,7 @@ impl EventsLoop {
     fn reset_shared_state(&mut self) {
         for window_state in self.shared_state.borrow_mut().values() {
             if let Some(window_state) = window_state.upgrade() {
-                window_state.lock().unwrap().reset();
+                window_state.lock().reset();
             }
         }
     }
@@ -431,7 +432,7 @@ impl EventsLoop {
                 let new_position = (xev.x, xev.y);
 
                 let (resized, moved) = {
-                    let mut windows = self.windows.lock().unwrap();
+                    let mut windows = self.windows.lock();
                     if let Some(window_data) = windows.get_mut(&WindowId(window)) {
                         let (mut resized, mut moved) = (false, false);
 
@@ -475,7 +476,7 @@ impl EventsLoop {
                     self.shared_state.borrow().get(&WindowId(window)).map(|window_state| {
                         if let Some(window_state) = window_state.upgrade() {
                             {
-                                let mut window_state_lock = window_state.lock().unwrap();
+                                let mut window_state_lock = window_state.lock();
                                 (*window_state_lock).inner_size = Some((width, height));
                             }
                             callback(Event::WindowEvent {
@@ -492,7 +493,7 @@ impl EventsLoop {
                         if let Some(window_state) = window_state.upgrade() {
                             let (x, y) = {
                                 let (inner_x, inner_y) = (xev.x as i32, xev.y as i32);
-                                let mut window_state_lock = window_state.lock().unwrap();
+                                let mut window_state_lock = window_state.lock();
                                 (*window_state_lock).inner_position = Some((inner_x, inner_y));
                                 if (*window_state_lock).frame_extents.is_some() {
                                     (*window_state_lock).frame_extents
@@ -536,7 +537,7 @@ impl EventsLoop {
                     .get(&WindowId(window))
                     .map(|window_state| {
                         if let Some(window_state) = window_state.upgrade() {
-                            (*window_state.lock().unwrap()).frame_extents.take();
+                            (*window_state.lock()).frame_extents.take();
                         }
                     });
             }
@@ -549,7 +550,7 @@ impl EventsLoop {
 
                 // In the event that the window's been destroyed without being dropped first, we
                 // cleanup again here.
-                self.windows.lock().unwrap().remove(&WindowId(window));
+                self.windows.lock().remove(&WindowId(window));
 
                 // Since all XIM stuff needs to happen from the same thread, we destroy the input
                 // context here instead of when dropping the window.
@@ -659,7 +660,7 @@ impl EventsLoop {
                         let window_id = mkwid(xev.event);
                         let device_id = mkdid(xev.deviceid);
                         if (xev.flags & ffi::XIPointerEmulated) != 0 {
-                            let windows = self.windows.lock().unwrap();
+                            let windows = self.windows.lock();
                             if let Some(window_data) = windows.get(&WindowId(xev.event)) {
                                 if window_data.multitouch {
                                     // Deliver multi-touch events instead of emulated mouse events.
@@ -748,7 +749,7 @@ impl EventsLoop {
 
                         // Gymnastics to ensure self.windows isn't locked when we invoke callback
                         if {
-                            let mut windows = self.windows.lock().unwrap();
+                            let mut windows = self.windows.lock();
                             let window_data = {
                                 if let Some(window_data) = windows.get_mut(&WindowId(xev.event)) {
                                     window_data
@@ -859,7 +860,6 @@ impl EventsLoop {
                         // been destroyed, which the user presumably doesn't want to deal with.
                         let window_closed = self.windows
                             .lock()
-                            .unwrap()
                             .get(&WindowId(xev.event))
                             .is_none();
 
@@ -875,7 +875,7 @@ impl EventsLoop {
 
                         let window_id = mkwid(xev.event);
 
-                        if let None = self.windows.lock().unwrap().get(&WindowId(xev.event)) {
+                        if let None = self.windows.lock().get(&WindowId(xev.event)) {
                             return;
                         }
                         self.ime
@@ -905,7 +905,7 @@ impl EventsLoop {
                     ffi::XI_FocusOut => {
                         let xev: &ffi::XIFocusOutEvent = unsafe { &*(xev.data as *const _) };
 
-                        if let None = self.windows.lock().unwrap().get(&WindowId(xev.event)) {
+                        if let None = self.windows.lock().get(&WindowId(xev.event)) {
                             return;
                         }
                         self.ime
@@ -1147,7 +1147,7 @@ impl Window {
             .create_context(win.id().0)
             .expect("Failed to create input context");
 
-        x_events_loop.windows.lock().unwrap().insert(win.id(), WindowData {
+        x_events_loop.windows.lock().insert(win.id(), WindowData {
             config: Default::default(),
             multitouch: window.multitouch,
             cursor_pos: None,
@@ -1170,7 +1170,6 @@ impl Window {
     pub fn send_xim_spot(&self, x: i16, y: i16) {
         let _ = self.ime_sender
             .lock()
-            .unwrap()
             .send((self.window.id().0, x, y));
     }
 }
@@ -1178,7 +1177,7 @@ impl Window {
 impl Drop for Window {
     fn drop(&mut self) {
         if let (Some(windows), Some(display)) = (self.windows.upgrade(), self.display.upgrade()) {
-            if let Some(_) = windows.lock().unwrap().remove(&self.window.id()) {
+            if let Some(_) = windows.lock().remove(&self.window.id()) {
                 unsafe {
                     (display.xlib.XDestroyWindow)(display.display, self.window.id().0);
                     display.check_errors().expect("Failed to destroy window");
