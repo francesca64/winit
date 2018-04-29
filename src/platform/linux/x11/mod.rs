@@ -188,8 +188,6 @@ impl EventsLoop {
     pub fn poll_events<F>(&mut self, mut callback: F)
         where F: FnMut(Event)
     {
-        self.init_shared_state();
-
         let mut xev = unsafe { mem::uninitialized() };
         loop {
             // Get next event
@@ -204,15 +202,11 @@ impl EventsLoop {
             }
             self.process_event(&mut xev, &mut callback);
         }
-
-        self.reset_shared_state();
     }
 
     pub fn run_forever<F>(&mut self, mut callback: F)
         where F: FnMut(Event) -> ControlFlow
     {
-        self.init_shared_state();
-
         let mut xev = unsafe { mem::uninitialized() };
 
         loop {
@@ -233,24 +227,6 @@ impl EventsLoop {
 
             if let ControlFlow::Break = control_flow {
                 break;
-            }
-        }
-
-        self.reset_shared_state();
-    }
-
-    fn init_shared_state(&mut self) {
-        for window_state in self.shared_state.borrow_mut().values() {
-            if let Some(window_state) = window_state.upgrade() {
-                (*window_state.lock()).event_loop_is_running = true;
-            }
-        }
-    }
-
-    fn reset_shared_state(&mut self) {
-        for window_state in self.shared_state.borrow_mut().values() {
-            if let Some(window_state) = window_state.upgrade() {
-                window_state.lock().reset();
             }
         }
     }
@@ -463,6 +439,12 @@ impl EventsLoop {
                             window_data.config.inner_position = Some(new_position);
                             // This way, we get sent Moved when the decorations are toggled.
                             window_data.config.position = None;
+                            self.shared_state.borrow().get(&WindowId(window)).map(|window_state| {
+                                if let Some(window_state) = window_state.upgrade() {
+                                    // Extra insurance against stale frame extents
+                                    (*window_state.lock()).frame_extents.take();
+                                }
+                            });
                         }
 
                         (resized, moved)
@@ -473,17 +455,9 @@ impl EventsLoop {
 
                 if resized {
                     let (width, height) = (xev.width as u32, xev.height as u32);
-                    self.shared_state.borrow().get(&WindowId(window)).map(|window_state| {
-                        if let Some(window_state) = window_state.upgrade() {
-                            {
-                                let mut window_state_lock = window_state.lock();
-                                (*window_state_lock).inner_size = Some((width, height));
-                            }
-                            callback(Event::WindowEvent {
-                                window_id,
-                                event: WindowEvent::Resized(width, height),
-                            });
-                        }
+                    callback(Event::WindowEvent {
+                        window_id,
+                        event: WindowEvent::Resized(width, height),
                     });
                 }
 
@@ -494,7 +468,6 @@ impl EventsLoop {
                             let (x, y) = {
                                 let (inner_x, inner_y) = (xev.x as i32, xev.y as i32);
                                 let mut window_state_lock = window_state.lock();
-                                (*window_state_lock).inner_position = Some((inner_x, inner_y));
                                 if (*window_state_lock).frame_extents.is_some() {
                                     (*window_state_lock).frame_extents
                                         .as_ref()

@@ -47,20 +47,7 @@ unsafe impl Sync for Window2 {}
 
 #[derive(Debug, Default)]
 pub struct SharedState {
-    pub event_loop_is_running: bool,
     pub frame_extents: Option<util::FrameExtentsHeuristic>,
-    pub inner_position: Option<(i32, i32)>,
-    pub inner_size: Option<(u32, u32)>,
-}
-
-impl SharedState {
-    pub fn reset(&mut self) {
-        let mut new = Self::default();
-        // We retain the frame extents, since those aren't typically updated in the event loop.
-        // The exception is the WM being replaced.
-        mem::swap(&mut new.frame_extents, &mut self.frame_extents);
-        *self = new;
-    }
 }
 
 pub struct Window2 {
@@ -569,23 +556,9 @@ impl Window2 {
 
     #[inline]
     pub fn get_inner_position(&self) -> Option<(i32, i32)> {
-        let mut shared_state_lock = self.shared_state.lock();
-        if (*shared_state_lock).event_loop_is_running {
-            let inner_position = (*shared_state_lock).inner_position.clone();
-            if let Some(_) = inner_position {
-                return inner_position;
-            }
-        }
-        // This case will only be entered if the event loop isn't running.
-        // In order to take advantage of caching in a single-threaded app, you have to only query
-        // position/size from within the event loop callback.
-        let inner_position = unsafe { util::translate_coords(
-            &self.x.display,
-            self.x.window,
-            self.x.root,
-        ) }.ok().map(|coords| (coords.x_rel_root, coords.y_rel_root));
-        (*shared_state_lock).inner_position = inner_position.clone();
-        inner_position
+        unsafe { util::translate_coords(&self.x.display, self.x.window, self.x.root )}
+            .ok()
+            .map(|coords| (coords.x_rel_root, coords.y_rel_root))
     }
 
     pub fn set_position(&self, mut x: i32, mut y: i32) {
@@ -608,25 +581,15 @@ impl Window2 {
                 x as c_int,
                 y as c_int,
             );
-        }
-        self.x.display.check_errors().expect("Failed to call XMoveWindow");
+            util::flush_requests(&self.x.display)
+        }.expect("Failed to call XMoveWindow");
     }
 
     #[inline]
     pub fn get_inner_size(&self) -> Option<(u32, u32)> {
-        let mut shared_state_lock = self.shared_state.lock();
-        if (*shared_state_lock).event_loop_is_running {
-            let inner_size = (*shared_state_lock).inner_size.clone();
-            if let Some(_) = inner_size {
-                return inner_size;
-            }
-        }
-        // This case will only be entered if the event loop isn't running.
-        let inner_size = unsafe { util::get_geometry(&self.x.display, self.x.window) }
+        unsafe { util::get_geometry(&self.x.display, self.x.window) }
             .ok()
-            .map(|geo| (geo.width, geo.height));
-        (*shared_state_lock).inner_size = inner_size.clone();
-        inner_size
+            .map(|geo| (geo.width, geo.height))
     }
 
     #[inline]
@@ -644,8 +607,15 @@ impl Window2 {
 
     #[inline]
     pub fn set_inner_size(&self, x: u32, y: u32) {
-        unsafe { (self.x.display.xlib.XResizeWindow)(self.x.display.display, self.x.window, x as c_uint, y as c_uint); }
-        self.x.display.check_errors().expect("Failed to call XResizeWindow");
+        unsafe {
+            (self.x.display.xlib.XResizeWindow)(
+                self.x.display.display,
+                self.x.window,
+                x as c_uint,
+                y as c_uint,
+            );
+            util::flush_requests(&self.x.display)
+        }.expect("Failed to call XResizeWindow");
     }
 
     unsafe fn update_normal_hints<F>(&self, callback: F) -> Result<(), XError>
