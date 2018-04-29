@@ -49,7 +49,7 @@ pub struct EventsLoop {
     ime: RefCell<Ime>,
     windows: Arc<Mutex<HashMap<WindowId, WindowData>>>,
     // Please don't laugh at this type signature
-    shared_state: RefCell<HashMap<WindowId, Arc<Mutex<window::SharedState>>>>,
+    shared_state: RefCell<HashMap<WindowId, Weak<Mutex<window::SharedState>>>>,
     devices: RefCell<HashMap<DeviceId, Device>>,
     xi2ext: XExtension,
     pending_wakeup: Arc<AtomicBool>,
@@ -240,13 +240,17 @@ impl EventsLoop {
 
     fn init_shared_state(&mut self) {
         for window_state in self.shared_state.borrow_mut().values() {
-            (*window_state.lock().unwrap()).event_loop_is_running = true;
+            if let Some(window_state) = window_state.upgrade() {
+                (*window_state.lock().unwrap()).event_loop_is_running = true;
+            }
         }
     }
 
     fn reset_shared_state(&mut self) {
         for window_state in self.shared_state.borrow_mut().values() {
-            window_state.lock().unwrap().reset()
+            if let Some(window_state) = window_state.upgrade() {
+                window_state.lock().unwrap().reset();
+            }
         }
     }
 
@@ -461,49 +465,50 @@ impl EventsLoop {
 
                 if resized {
                     let (width, height) = (xev.width as u32, xev.height as u32);
-                    self.shared_state
-                        .borrow()
-                        .get(&WindowId(window))
-                        .map(|shared_state| {
-                            let mut shared_state_lock = shared_state.lock().unwrap();
-                            (*shared_state_lock).inner_size = Some((width, height));
-                        });
-                    callback(Event::WindowEvent {
-                        window_id,
-                        event: WindowEvent::Resized(width, height),
+                    self.shared_state.borrow().get(&WindowId(window)).map(|window_state| {
+                        if let Some(window_state) = window_state.upgrade() {
+                            {
+                                let mut window_state_lock = window_state.lock().unwrap();
+                                (*window_state_lock).inner_size = Some((width, height));
+                            }
+                            callback(Event::WindowEvent {
+                                window_id,
+                                event: WindowEvent::Resized(width, height),
+                            });
+                        }
                     });
                 }
 
                 if moved {
-                    let outer_position = self.shared_state
-                        .borrow()
-                        .get(&WindowId(window))
-                        .map(|shared_state| {
-                            let (inner_x, inner_y) = (xev.x as i32, xev.y as i32);
-                            let mut shared_state_lock = shared_state.lock().unwrap();
-                            (*shared_state_lock).inner_position = Some((inner_x, inner_y));
-                            if (*shared_state_lock).frame_extents.is_some() {
-                                (*shared_state_lock).frame_extents
-                                    .as_ref()
-                                    .unwrap()
-                                    .inner_pos_to_outer(inner_x, inner_y)
-                            } else {
-                                let extents = util::get_frame_extents_heuristic(
-                                    &self.display,
-                                    window,
-                                    self.root,
-                                );
-                                let outer_pos = extents.inner_pos_to_outer(inner_x, inner_y);
-                                (*shared_state_lock).frame_extents = Some(extents);
-                                outer_pos
-                            }
-                        });
-                    if let Some((x, y)) = outer_position {
-                        callback(Event::WindowEvent {
-                            window_id,
-                            event: WindowEvent::Moved(x, y),
-                        });
-                    }
+                    // We need to convert client area position to window position.
+                    self.shared_state.borrow().get(&WindowId(window)).map(|window_state| {
+                        if let Some(window_state) = window_state.upgrade() {
+                            let (x, y) = {
+                                let (inner_x, inner_y) = (xev.x as i32, xev.y as i32);
+                                let mut window_state_lock = window_state.lock().unwrap();
+                                (*window_state_lock).inner_position = Some((inner_x, inner_y));
+                                if (*window_state_lock).frame_extents.is_some() {
+                                    (*window_state_lock).frame_extents
+                                        .as_ref()
+                                        .unwrap()
+                                        .inner_pos_to_outer(inner_x, inner_y)
+                                } else {
+                                    let extents = util::get_frame_extents_heuristic(
+                                        &self.display,
+                                        window,
+                                        self.root,
+                                    );
+                                    let outer_pos = extents.inner_pos_to_outer(inner_x, inner_y);
+                                    (*window_state_lock).frame_extents = Some(extents);
+                                    outer_pos
+                                }
+                            };
+                            callback(Event::WindowEvent {
+                                window_id,
+                                event: WindowEvent::Moved(x, y),
+                            });
+                        }
+                    });
                 }
             }
 
@@ -522,8 +527,10 @@ impl EventsLoop {
                 self.shared_state
                     .borrow()
                     .get(&WindowId(window))
-                    .map(|shared_state| {
-                        (*shared_state.lock().unwrap()).frame_extents.take();
+                    .map(|window_state| {
+                        if let Some(window_state) = window_state.upgrade() {
+                            (*window_state.lock().unwrap()).frame_extents.take();
+                        }
                     });
             }
 
@@ -1126,7 +1133,7 @@ impl Window {
 
         x_events_loop.shared_state
             .borrow_mut()
-            .insert(win.id(), Arc::clone(&win.shared_state));
+            .insert(win.id(), Arc::downgrade(&win.shared_state));
 
         x_events_loop.ime
             .borrow_mut()

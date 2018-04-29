@@ -241,7 +241,7 @@ pub fn get_frame_extents_heuristic(
     // Position relative to root window.
     // With rare exceptions, this is the position of a nested window. Cases where the window
     // isn't nested are outlined in the comments throghout this function, but in addition to
-    // that, fullscreen windows sometimes aren't nested.
+    // that, fullscreen windows often aren't nested.
     let (inner_y_rel_root, child) = {
         let coords = unsafe { translate_coords(xconn, window, root) }
             .expect("Failed to translate window coordinates");
