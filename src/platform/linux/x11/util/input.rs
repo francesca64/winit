@@ -21,6 +21,24 @@ pub unsafe fn select_xinput_events(
     Flusher::new(xconn)
 }
 
+pub unsafe fn select_xkb_events(
+    xconn: &Arc<XConnection>,
+    device_id: c_uint,
+    mask: c_ulong,
+) -> Option<Flusher> {
+    let status = (xconn.xlib.XkbSelectEvents)(
+        xconn.display,
+        device_id,
+        mask,
+        mask,
+    );
+    if status == ffi::True {
+        Some(Flusher::new(xconn))
+    } else {
+        None
+    }
+}
+
 impl From<ffi::XIModifierState> for ModifiersState {
     fn from(mods: ffi::XIModifierState) -> Self {
         let state = mods.effective as c_uint;
