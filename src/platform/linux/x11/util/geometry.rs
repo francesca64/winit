@@ -26,7 +26,7 @@ pub unsafe fn translate_coords(
         &mut translated_coords.child,
     );
 
-    println!("XTranslateCoordinates coords:{:?}", translated_coords);
+    //println!("XTranslateCoordinates coords:{:?}", translated_coords);
 
     xconn.check_errors().map(|_| translated_coords)
 }
@@ -70,7 +70,7 @@ pub unsafe fn get_geometry(
         &mut geometry.depth,
     );
 
-    println!("XGetGeometry geo:{:?}", geometry);
+    //println!("XGetGeometry geo:{:?}", geometry);
 
     xconn.check_errors().map(|_| geometry)
 }

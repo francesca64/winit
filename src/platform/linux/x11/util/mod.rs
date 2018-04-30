@@ -111,7 +111,7 @@ impl<'a, T> Drop for XSmartPointer<'a, T> {
 // All util functions that abstract an async function will return a Flusher.
 pub unsafe fn flush_requests(xconn: &Arc<XConnection>) -> Result<(), XError> {
     (xconn.xlib.XFlush)(xconn.display);
-    println!("XFlush");
+    //println!("XFlush");
     // This isn't necessarily a useful time to check for errors (since our request hasn't
     // necessarily been processed yet)
     xconn.check_errors()
@@ -119,7 +119,7 @@ pub unsafe fn flush_requests(xconn: &Arc<XConnection>) -> Result<(), XError> {
 
 pub unsafe fn sync_with_server(xconn: &Arc<XConnection>) -> Result<(), XError> {
     (xconn.xlib.XSync)(xconn.display, ffi::False);
-    println!("XSync");
+    //println!("XSync");
     xconn.check_errors()
 }
 

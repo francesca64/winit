@@ -24,18 +24,18 @@ pub unsafe fn get_atom(xconn: &Arc<XConnection>, name: &[u8]) -> Result<ffi::Ato
             name.as_ptr() as *const c_char,
             ffi::False,
         );
-        println!(
+        /*println!(
             "XInternAtom name:{:?} atom:{:?}",
             name,
             atom,
-        );
+        );*/
         xconn.check_errors()?;
         (*atom_cache_lock).insert(name.to_owned(), atom);
         Ok(atom)
     }
 }
 
-// Note: this doesn't use caching, for the sake of simplicity..
+// Note: this doesn't use caching, for the sake of simplicity.
 // If you're dealing with this many atoms, you'll usually want to cache them locally anyway.
 pub unsafe fn get_atoms(
     xconn: &Arc<XConnection>,
@@ -51,9 +51,9 @@ pub unsafe fn get_atoms(
     );
     xconn.check_errors()?;
     atoms.set_len(names.len());
-    println!(
+    /*println!(
         "XInternAtoms atoms:{:?}",
         atoms,
-    );
+    );*/
     Ok(atoms)
 }
