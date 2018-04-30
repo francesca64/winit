@@ -30,11 +30,9 @@ mod xdisplay;
 mod dnd;
 mod ime;
 mod util;
-mod xkb;
 
 use self::dnd::{Dnd, DndState};
 use self::ime::{ImeReceiver, ImeSender, ImeCreationError, Ime};
-use self::xkb::Xkb;
 
 pub struct EventsLoop {
     display: Arc<XConnection>,
@@ -43,7 +41,6 @@ pub struct EventsLoop {
     ime_receiver: ImeReceiver,
     ime_sender: ImeSender,
     ime: RefCell<Ime>,
-    xkb: RefCell<Option<Xkb>>,
     windows: Arc<Mutex<HashMap<WindowId, WindowData>>>,
     // Please don't laugh at this type signature
     shared_state: RefCell<HashMap<WindowId, Weak<Mutex<window::SharedState>>>>,
@@ -117,8 +114,6 @@ impl EventsLoop {
             }
         }
 
-        let xkb = unsafe { Xkb::new(&display) }.ok();
-
         let root = unsafe { (display.xlib.XDefaultRootWindow)(display.display) };
         util::update_cached_wm_info(&display, root);
 
@@ -146,7 +141,6 @@ impl EventsLoop {
             ime_receiver,
             ime_sender,
             ime,
-            xkb: RefCell::new(xkb),
             windows: Arc::new(Mutex::new(HashMap::new())),
             shared_state: RefCell::new(HashMap::new()),
             devices: RefCell::new(HashMap::new()),
@@ -574,25 +568,19 @@ impl EventsLoop {
                         logo: xkev.state & ffi::Mod4Mask != 0,
                     };
 
-                    let keysym = self.xkb
-                        .borrow()
-                        .as_ref()
-                        .and_then(|xkb| xkb.get_keysym(device, xkev.keycode as _))
-                        .unwrap_or_else(|| {
-                            unsafe {
-                                let mut keysym = 0;
-                                (self.display.xlib.XLookupString)(
-                                    xkev,
-                                    ptr::null_mut(),
-                                    0,
-                                    &mut keysym,
-                                    ptr::null_mut(),
-                                );
-                                self.display.check_errors().expect("Failed to lookup keysym");
-                                keysym as c_uint
-                            }
-                        });
-                    let virtual_keycode = events::keysym_to_element(keysym);
+                    let keysym = unsafe {
+                        let mut keysym = 0;
+                        (self.display.xlib.XLookupString)(
+                            xkev,
+                            ptr::null_mut(),
+                            0,
+                            &mut keysym,
+                            ptr::null_mut(),
+                        );
+                        self.display.check_errors().expect("Failed to lookup keysym");
+                        keysym
+                    };
+                    let virtual_keycode = events::keysym_to_element(keysym as c_uint);
 
                     callback(Event::WindowEvent {
                         window_id,
@@ -809,12 +797,8 @@ impl EventsLoop {
                         let device_id = mkdid(xev.deviceid);
 
                         let mut devices = self.devices.borrow_mut();
-                        let mut keyboard_id = 3;
                         let physical_device = devices.get_mut(&DeviceId(xev.sourceid)).unwrap();
                         for info in DeviceInfo::get(&self.display, ffi::XIAllDevices).iter() {
-                            if info.deviceid == xev.deviceid {
-                                keyboard_id = info.attachment;
-                            }
                             if info.deviceid == xev.sourceid {
                                 physical_device.reset_scroll_position(info);
                             }
@@ -829,19 +813,13 @@ impl EventsLoop {
                         // The mods field on this event isn't actually populated, so we...
                         // A) Use Xkb state if it's available
                         // B) Query the pointer device if not (round-trip)
-                        let modifiers = self.xkb
-                            .borrow()
-                            .as_ref()
-                            .and_then(|xkb| xkb.get_modifiers(keyboard_id))
-                            .unwrap_or_else(|| {
-                                unsafe {
-                                    util::query_pointer(
-                                        &self.display,
-                                        xev.event,
-                                        xev.deviceid,
-                                    )
-                                }.expect("Failed to query pointer device").get_modifier_state()
-                            });
+                        let modifiers = unsafe {
+                            util::query_pointer(
+                                &self.display,
+                                xev.event,
+                                xev.deviceid,
+                            )
+                        }.expect("Failed to query pointer device").get_modifier_state();
 
                         callback(Event::WindowEvent { window_id, event: CursorMoved {
                             device_id,
@@ -1002,27 +980,16 @@ impl EventsLoop {
                         if keycode < 8 { return; }
                         let scancode = (keycode - 8) as u32;
 
-                        let (keysym, modifiers) = self.xkb
-                            .borrow()
-                            .as_ref()
-                            .and_then(|xkb| {
-                                let keysym = xkb.get_keysym(device_id, keycode);
-                                let modifiers = xkb.get_modifiers(device_id);
-                                keysym.and_then(|keysym| modifiers.map(|mods| (keysym, mods)))
-                            })
-                            .unwrap_or_else(|| {
-                                let keysym = unsafe {
-                                    (self.display.xlib.XKeycodeToKeysym)(
-                                        self.display.display,
-                                        xev.detail as ffi::KeyCode,
-                                        0,
-                                    )
-                                };
-                                self.display.check_errors().expect("Failed to lookup raw keysym");
-                                (keysym as c_uint, ModifiersState::default())
-                            });
+                        let keysym = unsafe {
+                            (self.display.xlib.XKeycodeToKeysym)(
+                                self.display.display,
+                                xev.detail as ffi::KeyCode,
+                                0,
+                            )
+                        };
+                        self.display.check_errors().expect("Failed to lookup raw keysym");
 
-                        let virtual_keycode = events::keysym_to_element(keysym);
+                        let virtual_keycode = events::keysym_to_element(keysym as c_uint);
 
                         callback(Event::DeviceEvent {
                             device_id: mkdid(device_id),
@@ -1030,7 +997,12 @@ impl EventsLoop {
                                 scancode,
                                 virtual_keycode,
                                 state,
-                                modifiers,
+                                // So, in an ideal world we can use libxkbcommon to get modifiers.
+                                // However, libxkbcommon-x11 isn't as commonly installed as one
+                                // would hope. We can still use the Xkb extension to get
+                                // comprehensive keyboard state updates, but interpreting that
+                                // info manually is going to be involved.
+                                modifiers: ModifiersState::default(),
                             }),
                         });
                     }
@@ -1051,47 +1023,8 @@ impl EventsLoop {
 
                     _ => {}
                 }
-            }
-
-            _ => {
-                if self.xkb.borrow().as_ref().map(|xkb| xkb.event_code) == Some(event_type as _) {
-                    let mut xkb_borrow = self.xkb.borrow_mut();
-                    let xkb = xkb_borrow.as_mut().unwrap();
-                    let xkb_event: &ffi::XkbAnyEvent = unsafe { &*(xev as *const _ as *const _) };
-                    match xkb_event.xkb_type {
-                        ffi::XkbNewKeyboardNotify => {
-                            unsafe {
-                                let xkb_event: &ffi::XkbNewKeyboardNotifyEvent =
-                                    &*(xkb_event as *const _ as *const _);
-                                xkb.add_keyboard(xkb_event.device)
-                            }.expect("Failed to create XkbState for new keyboard");
-                        },
-                        ffi::XkbMapNotify => {
-                            unsafe {
-                                let xkb_event: &ffi::XkbMapNotifyEvent =
-                                    &*(xkb_event as *const _ as *const _);
-                                xkb.add_keyboard(xkb_event.device)
-                            }.expect("Failed to replace XkbState for new mapping");
-                        },
-                        ffi::XkbStateNotify => {
-                            unsafe {
-                                let xkb_event: &ffi::XkbStateNotifyEvent =
-                                    &*(xkb_event as *const _ as *const _);
-                                xkb.update(
-                                    xkb_event.device,
-                                    xkb_event.base_mods,
-                                    xkb_event.latched_mods,
-                                    xkb_event.locked_mods,
-                                    xkb_event.base_group,
-                                    xkb_event.latched_group,
-                                    xkb_event.locked_group,
-                                );
-                            }
-                        },
-                        _ => (),
-                    }
-                }
-            }
+            },
+            _ => (),
         }
 
         match self.ime_receiver.try_recv() {
@@ -1334,16 +1267,6 @@ impl Device {
     fn new(el: &EventsLoop, info: &ffi::XIDeviceInfo) -> Self {
         let name = unsafe { CStr::from_ptr(info.name).to_string_lossy() };
         let mut scroll_axes = Vec::new();
-
-        let is_keyboard = info._use == ffi::XISlaveKeyboard || info._use == ffi::XIMasterKeyboard;
-        if is_keyboard && el.xkb.borrow().is_some() {
-            el.xkb
-                .borrow_mut()
-                .as_mut()
-                .unwrap()
-                .add_keyboard(info.deviceid)
-                .expect("Failed to initialize XkbState for keyboard");
-        }
 
         if Device::physical_device(info) {
             // Register for global raw events

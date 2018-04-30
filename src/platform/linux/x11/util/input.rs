@@ -21,6 +21,7 @@ pub unsafe fn select_xinput_events(
     Flusher::new(xconn)
 }
 
+#[allow(dead_code)]
 pub unsafe fn select_xkb_events(
     xconn: &Arc<XConnection>,
     device_id: c_uint,
