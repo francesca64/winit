@@ -798,8 +798,12 @@ impl EventsLoop {
                         let device_id = mkdid(xev.deviceid);
 
                         let mut devices = self.devices.borrow_mut();
+                        let mut keyboard_id = 3;
                         let physical_device = devices.get_mut(&DeviceId(xev.sourceid)).unwrap();
                         for info in DeviceInfo::get(&self.display, ffi::XIAllDevices).iter() {
+                            if info.deviceid == xev.deviceid {
+                                keyboard_id = info.attachment;
+                            }
                             if info.deviceid == xev.sourceid {
                                 physical_device.reset_scroll_position(info);
                             }
@@ -817,13 +821,7 @@ impl EventsLoop {
                         let modifiers = self.xkb
                             .borrow()
                             .as_ref()
-                            .and_then(|xkb| {
-                                // This round-trips anyway, though it would be easy to cache in
-                                // the future.
-                                let device_info = DeviceInfo::get(&self.display, xev.deviceid);
-                                let kb_id = unsafe { (*device_info.info) }.attachment;
-                                xkb.get_modifiers(kb_id)
-                            })
+                            .and_then(|xkb| xkb.get_modifiers(keyboard_id))
                             .unwrap_or_else(|| {
                                 unsafe {
                                     util::query_pointer(
@@ -874,11 +872,11 @@ impl EventsLoop {
 
                         // The deviceid for this event is for a keyboard instead of a pointer,
                         // so we have to do a little extra work.
-                        let device_info = DeviceInfo::get(&self.display, xev.deviceid);
-                        // For master devices, the attachment field contains the ID of the
-                        // paired master device; for the master keyboard, the attachment is
-                        // the master pointer, and vice versa.
-                        let pointer_id = unsafe { (*device_info.info) }.attachment;
+                        let pointer_id = self.devices
+                            .borrow()
+                            .get(&DeviceId(xev.deviceid))
+                            .map(|device| device.attachment)
+                            .unwrap_or(2);
 
                         callback(Event::WindowEvent {
                             window_id,
@@ -1048,7 +1046,6 @@ impl EventsLoop {
                     let mut xkb_borrow = self.xkb.borrow_mut();
                     let xkb = xkb_borrow.as_mut().unwrap();
                     let xkb_event: &ffi::XkbAnyEvent = unsafe { &*(xev as *const _ as *const _) };
-                    // TODO: Only do these for keyboards
                     match xkb_event.xkb_type {
                         ffi::XkbNewKeyboardNotify => {
                             unsafe {
@@ -1303,6 +1300,9 @@ fn mkdid(w: c_int) -> ::DeviceId { ::DeviceId(::platform::DeviceId::X(DeviceId(w
 struct Device {
     name: String,
     scroll_axes: Vec<(i32, ScrollAxis)>,
+    // For master devices, this is the paired device (pointer <-> keyboard).
+    // For slave devices, this is the master.
+    attachment: c_int,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -1373,6 +1373,7 @@ impl Device {
         let mut device = Device {
             name: name.into_owned(),
             scroll_axes: scroll_axes,
+            attachment: info.attachment,
         };
         device.reset_scroll_position(info);
         device

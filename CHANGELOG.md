@@ -10,6 +10,7 @@
 - `DeviceId` on Windows is no longer a unit struct, and now contains a `u32`. For `WindowEvent`s, this will always be 0, but on `DeviceEvent`s it will be the handle to that device. `DeviceIdExt::get_persistent_identifier` can be used to acquire a unique identifier for that device that persists across replugs/reboots/etc.
 - Corrected `run_forever` on X11 to stop discarding `Awakened` events.
 - `DeviceEvent::Key` on X11 finally has correct modifier state.
+- Fixed memory leak on X11 every time the mouse entered the window.
 
 # Version 0.13.1 (2018-04-26)
 
