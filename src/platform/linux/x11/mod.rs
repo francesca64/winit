@@ -11,7 +11,7 @@ use {CreationError, Event, EventsLoopClosed, WindowEvent, DeviceEvent,
      KeyboardInput, ControlFlow};
 use events::ModifiersState;
 
-use std::{mem, ptr, slice};
+use std::{mem, slice};
 use std::sync::{Arc, Weak};
 use std::sync::atomic::{self, AtomicBool};
 use std::sync::mpsc;
@@ -559,42 +559,41 @@ impl EventsLoop {
                 let window = xkev.window;
                 let window_id = mkwid(window);
 
-                let modifiers = ModifiersState {
-                    alt: xkev.state & ffi::Mod1Mask != 0,
-                    shift: xkev.state & ffi::ShiftMask != 0,
-                    ctrl: xkev.state & ffi::ControlMask != 0,
-                    logo: xkev.state & ffi::Mod4Mask != 0,
-                };
-
-                let keysym = unsafe {
-                    let mut keysym = 0;
-                    (self.display.xlib.XLookupString)(
-                        xkev,
-                        ptr::null_mut(),
-                        0,
-                        &mut keysym,
-                        ptr::null_mut(),
-                    );
-                    keysym
-                };
-
-                let virtual_keycode = events::keysym_to_element(keysym as c_uint);
+                // Standard virtual core keyboard ID. XInput2 needs to be used to get a reliable
+                // value, though this should only be an issue under multiseat configurations.
+                let device = 3;
+                let device_id = mkdid(device);
 
                 // When a compose sequence or IME pre-edit is finished, it ends in a KeyPress with
                 // a keycode of 0.
                 if xkev.keycode != 0 {
-                    callback(Event::WindowEvent { window_id, event: WindowEvent::KeyboardInput {
-                        // Standard virtual core keyboard ID. XInput2 needs to be used to get a
-                        // reliable value, though this should only be an issue under multiseat
-                        // configurations.
-                        device_id: mkdid(3),
-                        input: KeyboardInput {
-                            state,
-                            scancode: xkev.keycode - 8,
-                            virtual_keycode,
-                            modifiers,
-                        },
-                    }});
+                    let modifiers = ModifiersState {
+                        alt: xkev.state & ffi::Mod1Mask != 0,
+                        shift: xkev.state & ffi::ShiftMask != 0,
+                        ctrl: xkev.state & ffi::ControlMask != 0,
+                        logo: xkev.state & ffi::Mod4Mask != 0,
+                    };
+
+                    let keysym = self.xkb
+                        .borrow()
+                        .as_ref()
+                        .and_then(|xkb| xkb.get_keysym(device, xkev.keycode as _));
+                    if let Some(keysym) = keysym {
+                        let virtual_keycode = events::keysym_to_element(keysym as c_uint);
+
+                        callback(Event::WindowEvent {
+                            window_id,
+                            event: WindowEvent::KeyboardInput {
+                                device_id,
+                                input: KeyboardInput {
+                                    state,
+                                    scancode: xkev.keycode - 8,
+                                    virtual_keycode,
+                                    modifiers,
+                                },
+                            }
+                        });
+                    }
                 }
 
                 if state == Pressed {

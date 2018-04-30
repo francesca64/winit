@@ -226,7 +226,7 @@ impl XkbState {
     }
 
     pub fn update(
-        &self,
+        &mut self,
         depressed_mods: xkb_mod_mask_t,
         latched_mods: xkb_mod_mask_t,
         locked_mods: xkb_mod_mask_t,
