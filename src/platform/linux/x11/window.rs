@@ -646,7 +646,7 @@ impl Window2 {
             self.x.window,
             size_hints.ptr,
         );
-        xconn.check_errors()?;
+        util::flush_requests(xconn)?;
 
         Ok(())
     }
@@ -711,19 +711,20 @@ impl Window2 {
 
     pub fn get_xcb_connection(&self) -> *mut c_void {
         unsafe {
-            (self.x.display.xlib_xcb.XGetXCBConnection)(self.get_xlib_display() as *mut _) as *mut _
+            (self.x.display.xlib_xcb.XGetXCBConnection)(self.x.display.display) as *mut _
         }
     }
 
-    fn load_cursor(&self, name: &str) -> ffi::Cursor {
-        use std::ffi::CString;
+    fn load_cursor(&self, name: &[u8]) -> ffi::Cursor {
         unsafe {
-            let c_string = CString::new(name.as_bytes()).unwrap();
-            (self.x.display.xcursor.XcursorLibraryLoadCursor)(self.x.display.display, c_string.as_ptr())
+            (self.x.display.xcursor.XcursorLibraryLoadCursor)(
+                self.x.display.display,
+                name.as_ptr() as *const c_char,
+            )
         }
     }
 
-    fn load_first_existing_cursor(&self, names :&[&str]) -> ffi::Cursor {
+    fn load_first_existing_cursor(&self, names: &[&[u8]]) -> ffi::Cursor {
         for name in names.iter() {
             let xcursor = self.load_cursor(name);
             if xcursor != 0 {
@@ -734,11 +735,11 @@ impl Window2 {
     }
 
     fn get_cursor(&self, cursor: MouseCursor) -> ffi::Cursor {
-        let load = |name: &str| {
+        let load = |name: &[u8]| {
             self.load_cursor(name)
         };
 
-        let loadn = |names: &[&str]| {
+        let loadn = |names: &[&[u8]]| {
             self.load_first_existing_cursor(names)
         };
 
@@ -747,50 +748,51 @@ impl Window2 {
         //
         // Try the better looking (or more suiting) names first.
         match cursor {
-            MouseCursor::Alias => load("link"),
-            MouseCursor::Arrow => load("arrow"),
-            MouseCursor::Cell => load("plus"),
-            MouseCursor::Copy => load("copy"),
-            MouseCursor::Crosshair => load("crosshair"),
-            MouseCursor::Default => load("left_ptr"),
-            MouseCursor::Hand => loadn(&["hand2", "hand1"]),
-            MouseCursor::Help => load("question_arrow"),
-            MouseCursor::Move => load("move"),
-            MouseCursor::Grab => loadn(&["openhand", "grab"]),
-            MouseCursor::Grabbing => loadn(&["closedhand", "grabbing"]),
-            MouseCursor::Progress => load("left_ptr_watch"),
-            MouseCursor::AllScroll => load("all-scroll"),
-            MouseCursor::ContextMenu => load("context-menu"),
+            MouseCursor::Alias => load(b"link\0"),
+            MouseCursor::Arrow => load(b"arrow\0"),
+            MouseCursor::Cell => load(b"plus\0"),
+            MouseCursor::Copy => load(b"copy\0"),
+            MouseCursor::Crosshair => load(b"crosshair\0"),
+            MouseCursor::Default => load(b"left_ptr\0"),
+            MouseCursor::Hand => loadn(&[b"hand2\0", b"hand1\0"]),
+            MouseCursor::Help => load(b"question_arrow\0"),
+            MouseCursor::Move => load(b"move\0"),
+            MouseCursor::Grab => loadn(&[b"openhand\0", b"grab\0"]),
+            MouseCursor::Grabbing => loadn(&[b"closedhand\0", b"grabbing\0"]),
+            MouseCursor::Progress => load(b"left_ptr_watch\0"),
+            MouseCursor::AllScroll => load(b"all-scroll\0"),
+            MouseCursor::ContextMenu => load(b"context-menu\0"),
 
-            MouseCursor::NoDrop => loadn(&["no-drop", "circle"]),
-            MouseCursor::NotAllowed => load("crossed_circle"),
+            MouseCursor::NoDrop => loadn(&[b"no-drop\0", b"circle\0"]),
+            MouseCursor::NotAllowed => load(b"crossed_circle\0"),
 
 
             // Resize cursors
-            MouseCursor::EResize => load("right_side"),
-            MouseCursor::NResize => load("top_side"),
-            MouseCursor::NeResize => load("top_right_corner"),
-            MouseCursor::NwResize => load("top_left_corner"),
-            MouseCursor::SResize => load("bottom_side"),
-            MouseCursor::SeResize => load("bottom_right_corner"),
-            MouseCursor::SwResize => load("bottom_left_corner"),
-            MouseCursor::WResize => load("left_side"),
-            MouseCursor::EwResize => load("h_double_arrow"),
-            MouseCursor::NsResize => load("v_double_arrow"),
-            MouseCursor::NwseResize => loadn(&["bd_double_arrow", "size_bdiag"]),
-            MouseCursor::NeswResize => loadn(&["fd_double_arrow", "size_fdiag"]),
-            MouseCursor::ColResize => loadn(&["split_h", "h_double_arrow"]),
-            MouseCursor::RowResize => loadn(&["split_v", "v_double_arrow"]),
+            MouseCursor::EResize => load(b"right_side\0"),
+            MouseCursor::NResize => load(b"top_side\0"),
+            MouseCursor::NeResize => load(b"top_right_corner\0"),
+            MouseCursor::NwResize => load(b"top_left_corner\0"),
+            MouseCursor::SResize => load(b"bottom_side\0"),
+            MouseCursor::SeResize => load(b"bottom_right_corner\0"),
+            MouseCursor::SwResize => load(b"bottom_left_corner\0"),
+            MouseCursor::WResize => load(b"left_side\0"),
+            MouseCursor::EwResize => load(b"h_double_arrow\0"),
+            MouseCursor::NsResize => load(b"v_double_arrow\0"),
+            MouseCursor::NwseResize => loadn(&[b"bd_double_arrow\0", b"size_bdiag\0"]),
+            MouseCursor::NeswResize => loadn(&[b"fd_double_arrow\0", b"size_fdiag\0"]),
+            MouseCursor::ColResize => loadn(&[b"split_h\0", b"h_double_arrow\0"]),
+            MouseCursor::RowResize => loadn(&[b"split_v\0", b"v_double_arrow\0"]),
 
-            MouseCursor::Text => loadn(&["text", "xterm"]),
-            MouseCursor::VerticalText => load("vertical-text"),
+            MouseCursor::Text => loadn(&[b"text\0", b"xterm\0"]),
+            MouseCursor::VerticalText => load(b"vertical-text\0"),
 
-            MouseCursor::Wait => load("watch"),
+            MouseCursor::Wait => load(b"watch\0"),
 
-            MouseCursor::ZoomIn => load("zoom-in"),
-            MouseCursor::ZoomOut => load("zoom-out"),
+            MouseCursor::ZoomIn => load(b"zoom-in\0"),
+            MouseCursor::ZoomOut => load(b"zoom-out\0"),
 
-            MouseCursor::NoneCursor => self.create_empty_cursor(),
+            MouseCursor::NoneCursor => self.create_empty_cursor()
+                .expect("Failed to create empty cursor"),
         }
     }
 
@@ -800,7 +802,7 @@ impl Window2 {
             if cursor != 0 {
                 (self.x.display.xlib.XFreeCursor)(self.x.display.display, cursor);
             }
-            self.x.display.check_errors().expect("Failed to set or free the cursor");
+            util::flush_requests(&self.x.display).expect("Failed to set or free the cursor");
         }
     }
 
@@ -815,28 +817,39 @@ impl Window2 {
     // TODO: This could maybe be cached. I don't think it's worth
     // the complexity, since cursor changes are not so common,
     // and this is just allocating a 1x1 pixmap...
-    fn create_empty_cursor(&self) -> ffi::Cursor {
-        use std::mem;
-
+    fn create_empty_cursor(&self) -> Option<ffi::Cursor> {
         let data = 0;
-        unsafe {
-            let pixmap = (self.x.display.xlib.XCreateBitmapFromData)(self.x.display.display, self.x.window, &data, 1, 1);
-            if pixmap == 0 {
-                // Failed to allocate
-                return 0;
-            }
+        let pixmap = unsafe {
+            (self.x.display.xlib.XCreateBitmapFromData)(
+                self.x.display.display,
+                self.x.window,
+                &data,
+                1,
+                1,
+            )
+        };
+        if pixmap == 0 {
+            // Failed to allocate
+            return None;
+        }
 
+        let cursor = unsafe {
             // We don't care about this color, since it only fills bytes
             // in the pixmap which are not 0 in the mask.
             let dummy_color: ffi::XColor = mem::uninitialized();
-            let cursor = (self.x.display.xlib.XCreatePixmapCursor)(self.x.display.display,
-                                                                   pixmap,
-                                                                   pixmap,
-                                                                   &dummy_color as *const _ as *mut _,
-                                                                   &dummy_color as *const _ as *mut _, 0, 0);
+            let cursor = (self.x.display.xlib.XCreatePixmapCursor)(
+                self.x.display.display,
+                pixmap,
+                pixmap,
+                &dummy_color as *const _ as *mut _,
+                &dummy_color as *const _ as *mut _,
+                0,
+                0,
+            );
             (self.x.display.xlib.XFreePixmap)(self.x.display.display, pixmap);
             cursor
-        }
+        };
+        Some(cursor)
     }
 
     pub fn set_cursor_state(&self, state: CursorState) -> Result<(), String> {
@@ -852,7 +865,7 @@ impl Window2 {
             Grab => {
                 unsafe {
                     (self.x.display.xlib.XUngrabPointer)(self.x.display.display, ffi::CurrentTime);
-                    self.x.display.check_errors().expect("Failed to call XUngrabPointer");
+                    util::flush_requests(&self.x.display).expect("Failed to call XUngrabPointer");
                 }
             },
             Normal => {},
@@ -866,7 +879,9 @@ impl Window2 {
             },
             Hide => {
                 *cursor_state = state;
-                self.update_cursor(self.create_empty_cursor());
+                self.update_cursor(
+                    self.create_empty_cursor().expect("Failed to create empty cursor")
+                );
                 Ok(())
             },
             Grab => {
@@ -912,8 +927,18 @@ impl Window2 {
 
     pub fn set_cursor_position(&self, x: i32, y: i32) -> Result<(), ()> {
         unsafe {
-            (self.x.display.xlib.XWarpPointer)(self.x.display.display, 0, self.x.window, 0, 0, 0, 0, x, y);
-            self.x.display.check_errors().map_err(|_| ())
+            (self.x.display.xlib.XWarpPointer)(
+                self.x.display.display,
+                0,
+                self.x.window,
+                0,
+                0,
+                0,
+                0,
+                x,
+                y,
+            );
+            util::flush_requests(&self.x.display).map_err(|_| ())
         }
     }
 
