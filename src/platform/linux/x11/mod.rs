@@ -588,6 +588,7 @@ impl EventsLoop {
                                     &mut keysym,
                                     ptr::null_mut(),
                                 );
+                                self.display.check_errors().expect("Failed to lookup keysym");
                                 keysym as c_uint
                             }
                         });
@@ -1017,6 +1018,7 @@ impl EventsLoop {
                                         0,
                                     )
                                 };
+                                self.display.check_errors().expect("Failed to lookup raw keysym");
                                 (keysym as c_uint, ModifiersState::default())
                             });
 

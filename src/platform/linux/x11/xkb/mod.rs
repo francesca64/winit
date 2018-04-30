@@ -20,6 +20,7 @@ pub fn xkb_keycode_from_x11_keycode(keycode: i32) -> xkb_keycode_t {
 
 #[derive(Debug)]
 pub enum XkbInitError {
+    LibxkbcommonUnavailable,
     ExtensionSetupFailed,
     ContextIsNull,
     CoreDeviceIdInvalid,
@@ -52,6 +53,10 @@ impl Drop for Xkb {
 
 impl Xkb {
     pub unsafe fn new(xconn: &Arc<XConnection>) -> Result<Self, XkbInitError> {
+        if XKBCOMMON_OPTION.is_none() || XKBCOMMON_X11_OPTION.is_none() {
+            return Err(XkbInitError::LibxkbcommonUnavailable);
+        }
+
         let xcb_conn = (xconn.xlib_xcb.XGetXCBConnection)(xconn.display);
 
         let flags = xkb_x11_setup_xkb_extension_flags::XKB_X11_SETUP_XKB_EXTENSION_NO_FLAGS;
