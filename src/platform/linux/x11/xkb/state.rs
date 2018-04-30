@@ -1,11 +1,10 @@
-use std::ptr;
 use std::sync::Arc;
 use std::os::raw::{c_int, c_uint};
 
 use x11_dl::xlib_xcb::xcb_connection_t;
 use xkbcommon_dl::*;
 
-use events::{ElementState, ModifiersState};
+use events::ModifiersState;
 
 use super::*;
 
@@ -46,7 +45,6 @@ impl From<c_int> for ModStatus {
 pub struct XkbState {
     keymap: *mut xkb_keymap,
     state: *mut xkb_state,
-    compose: Option<XkbCompose>,
 }
 
 impl Drop for XkbState {
@@ -96,57 +94,15 @@ impl XkbState {
         // Don't return an XkbState if anything's wrong
         util::sync_with_server(xconn)?;
 
-        // Compose is an optional feature, so don't sweat it if we can't initialize it.
-        let compose = XkbCompose::new(context).ok();
-
         Ok(XkbState {
             keymap,
             state,
-            compose,
         })
-    }
-
-    fn compose_status_check(&self, status: xkb_compose_status) -> bool {
-        if let Some(ref compose) = self.compose {
-            compose.compose_status == status
-        } else {
-            false
-        }
-    }
-
-    pub fn is_composing(&self) -> bool {
-        self.compose_status_check(xkb_compose_status::XKB_COMPOSE_COMPOSING)
-    }
-
-    pub fn is_composed(&self) -> bool {
-        self.compose_status_check(xkb_compose_status::XKB_COMPOSE_COMPOSED)
-    }
-
-    pub fn feed_compose(&mut self, keysym: xkb_keysym_t) {
-        if let Some(ref mut compose) = self.compose {
-            compose.feed_keysym(keysym);
-        }
     }
 
     pub fn get_keysym(&self, keycode: xkb_keycode_t) -> xkb_keysym_t {
         unsafe {
             (XKBCOMMON_HANDLE.xkb_state_key_get_one_sym)(self.state, keycode)
-        }
-    }
-
-    pub fn get_keysym_compose_aware(
-        &mut self,
-        keycode: xkb_keycode_t,
-        element_state: ElementState,
-    ) -> xkb_keysym_t {
-        let keysym = self.get_keysym(keycode);
-        if element_state == ElementState::Pressed {
-            self.feed_compose(keysym);
-        }
-        if self.is_composed() {
-            self.compose.as_mut().unwrap().get_keysym()
-        } else {
-            keysym
         }
     }
 
@@ -170,58 +126,6 @@ impl XkbState {
             shift,
             ctrl,
             logo,
-        }
-    }
-
-    unsafe fn get_utf8_direct(&mut self, keycode: xkb_keycode_t) -> Option<String> {
-        // This function returns the required size, and is so friendly that it specifies the
-        // pattern of passing a NULL pointer to get the size without doing anything else.
-        let required_size = (XKBCOMMON_HANDLE.xkb_state_key_get_utf8)(
-            self.state,
-            keycode,
-            ptr::null_mut(),
-            0,
-        );
-
-        if required_size == 0 {
-            return None;
-        }
-
-        // Note that the returned size doesn't include the NULL byte.
-        let buffer_size = (required_size + 1) as usize;
-        let mut buffer: Vec<u8> = Vec::with_capacity(buffer_size);
-
-        let bytes_written = (XKBCOMMON_HANDLE.xkb_state_key_get_utf8)(
-            self.state,
-            keycode,
-            buffer.as_mut_ptr() as *mut i8,
-            buffer_size,
-        );
-
-        // Check for truncation (which should never happen if we did the math right)
-        assert_eq!((bytes_written + 1) as usize, buffer_size);
-
-        buffer.set_len(bytes_written as usize);
-
-        // libxkbcommon always provides valid UTF8
-        Some(String::from_utf8_unchecked(buffer))
-    }
-
-    pub unsafe fn get_utf8(
-        &mut self,
-        keycode: xkb_keycode_t,
-        element_state: ElementState,
-    ) -> Option<String> {
-        if element_state == ElementState::Pressed {
-            if self.is_composed() {
-                self.compose.as_mut().unwrap().get_utf8()
-            } else if self.is_composing() {
-                None
-            } else {
-                self.get_utf8_direct(keycode)
-            }
-        } else {
-            None
         }
     }
 

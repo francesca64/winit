@@ -1,8 +1,6 @@
 mod state;
-mod compose;
 
 pub use self::state::*;
-pub use self::compose::*;
 
 use std::mem;
 use std::sync::Arc;
