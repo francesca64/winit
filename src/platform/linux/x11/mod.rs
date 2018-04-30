@@ -11,7 +11,7 @@ use {CreationError, Event, EventsLoopClosed, WindowEvent, DeviceEvent,
      KeyboardInput, ControlFlow};
 use events::ModifiersState;
 
-use std::{mem, slice};
+use std::{mem, ptr, slice};
 use std::sync::{Arc, Weak};
 use std::sync::atomic::{self, AtomicBool};
 use std::sync::mpsc;
@@ -577,23 +577,34 @@ impl EventsLoop {
                     let keysym = self.xkb
                         .borrow()
                         .as_ref()
-                        .and_then(|xkb| xkb.get_keysym(device, xkev.keycode as _));
-                    if let Some(keysym) = keysym {
-                        let virtual_keycode = events::keysym_to_element(keysym as c_uint);
-
-                        callback(Event::WindowEvent {
-                            window_id,
-                            event: WindowEvent::KeyboardInput {
-                                device_id,
-                                input: KeyboardInput {
-                                    state,
-                                    scancode: xkev.keycode - 8,
-                                    virtual_keycode,
-                                    modifiers,
-                                },
+                        .and_then(|xkb| xkb.get_keysym(device, xkev.keycode as _))
+                        .unwrap_or_else(|| {
+                            unsafe {
+                                let mut keysym = 0;
+                                (self.display.xlib.XLookupString)(
+                                    xkev,
+                                    ptr::null_mut(),
+                                    0,
+                                    &mut keysym,
+                                    ptr::null_mut(),
+                                );
+                                keysym as c_uint
                             }
                         });
-                    }
+                    let virtual_keycode = events::keysym_to_element(keysym);
+
+                    callback(Event::WindowEvent {
+                        window_id,
+                        event: WindowEvent::KeyboardInput {
+                            device_id,
+                            input: KeyboardInput {
+                                state,
+                                scancode: xkev.keycode - 8,
+                                virtual_keycode,
+                                modifiers,
+                            },
+                        }
+                    });
                 }
 
                 if state == Pressed {

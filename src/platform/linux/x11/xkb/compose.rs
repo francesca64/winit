@@ -99,7 +99,7 @@ impl XkbCompose {
     }
 
     pub unsafe fn get_utf8(&mut self) -> Option<String> {
-        assert!(self.compose_status == xkb_compose_status::XKB_COMPOSE_COMPOSED);
+        assert_eq!(self.compose_status, xkb_compose_status::XKB_COMPOSE_COMPOSED);
 
         // This function returns the required size, and is so friendly that it specifies the
         // pattern of passing a NULL pointer to get the size without doing anything else.
@@ -124,7 +124,7 @@ impl XkbCompose {
         );
 
         // Check for truncation (which should never happen if we did the math right)
-        debug_assert_eq!((bytes_written + 1) as usize, buffer_size);
+        assert_eq!((bytes_written + 1) as usize, buffer_size);
 
         buffer.set_len(bytes_written as usize);
 

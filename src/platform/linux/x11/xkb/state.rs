@@ -199,7 +199,7 @@ impl XkbState {
         );
 
         // Check for truncation (which should never happen if we did the math right)
-        debug_assert_eq!((bytes_written + 1) as usize, buffer_size);
+        assert_eq!((bytes_written + 1) as usize, buffer_size);
 
         buffer.set_len(bytes_written as usize);
 
