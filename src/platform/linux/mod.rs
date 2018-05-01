@@ -353,15 +353,24 @@ impl EventsLoop {
             }
         }
 
-        if let Ok(el) = EventsLoop::new_wayland() {
-            return el;
-        }
+        let wayland_err = match EventsLoop::new_wayland() {
+            Ok(event_loop) => return event_loop,
+            Err(err) => err,
+        };
 
-        if let Ok(el) = EventsLoop::new_x11() {
-            return el;
-        }
+        let x11_err = match EventsLoop::new_x11() {
+            Ok(event_loop) => return event_loop,
+            Err(err) => err,
+        };
 
-        panic!("No backend is available")
+        let err_string = format!(
+r#"Failed to initialize any backend!
+    Wayland status: {:#?}
+    X11 status: {:#?}"#,
+            wayland_err,
+            x11_err,
+        );
+        panic!(err_string);
     }
 
     pub fn new_wayland() -> Result<EventsLoop, ()> {
