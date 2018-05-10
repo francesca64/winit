@@ -2,10 +2,29 @@ use std::slice;
 
 use super::*;
 use super::ffi::{
+    Bool,
+    Display,
+    RRNotify,
+    RRNotify_CrtcChange,
+    RRNotify_OutputChange,
+    RRNotify_OutputProperty,
+    RRNotify_ProviderChange,
+    RRNotify_ProviderProperty,
+    RRNotify_ResourceChange,
     RROutput,
+    RRScreenChangeNotify,
+    Window,
+    XRRCrtcChangeNotifyEvent,
     XRRCrtcInfo,
     XRRMonitorInfo,
+    XRRNotifyEvent,
+    XRROutputChangeNotifyEvent,
+    XRROutputPropertyNotifyEvent,
+    XRRProviderChangeNotifyEvent,
+    XRRProviderPropertyNotifyEvent,
+    XRRScreenChangeNotifyEvent,
     XRRScreenResources,
+    XRRResourceChangeNotifyEvent,
 };
 
 pub enum MonitorRepr {
@@ -61,7 +80,7 @@ pub fn calc_dpi_factor(
 }
 
 impl XConnection {
-    pub unsafe fn get_output_info(&self, resources: *mut XRRScreenResources, repr: &MonitorRepr) -> (String, f32) {
+    pub unsafe fn get_output_info(&self, resources: *mut XRRScreenResources, repr: &MonitorRepr) -> (String, f64) {
         let output_info = (self.xrandr.XRRGetOutputInfo)(
             self.display,
             resources,
@@ -75,8 +94,62 @@ impl XConnection {
         let hidpi_factor = calc_dpi_factor(
             repr.get_dimensions(),
             ((*output_info).mm_width as u64, (*output_info).mm_height as u64),
-        ) as f32;
+        );
         (self.xrandr.XRRFreeOutputInfo)(output_info);
         (name, hidpi_factor)
+    }
+}
+
+// At present, we're only subscribed to `CrtcChange`, `OutputProperty`, and `ScreenChange`.
+#[derive(Debug)]
+#[allow(dead_code)]
+pub enum RandREvent<'a> {
+    CrtcChange(&'a XRRCrtcChangeNotifyEvent),
+    OutputChange(&'a XRROutputChangeNotifyEvent),
+    OutputProperty(&'a XRROutputPropertyNotifyEvent),
+    ProviderChange(&'a XRRProviderChangeNotifyEvent),
+    ProviderProperty(&'a XRRProviderPropertyNotifyEvent),
+    // This seems to be what's usually sent.
+    ScreenChange(&'a XRRScreenChangeNotifyEvent),
+    ResourceChange(&'a XRRResourceChangeNotifyEvent),
+    Unknown,
+}
+
+#[repr(C)]
+#[derive(Debug)]
+#[allow(dead_code)]
+pub struct XRRAnyEvent {
+    pub type_: c_int,
+    pub serial: c_ulong,
+    pub send_event: Bool,
+    pub display: *mut Display,
+    pub window: Window,
+}
+
+#[allow(non_upper_case_globals)]
+impl<'a> EventMatch<'a, RandREvent<'a>> for XRRAnyEvent {
+    fn get_match(&'a self, base_code: c_int) -> RandREvent {
+        use self::RandREvent::*;
+        let event_type = self.type_
+            .checked_sub(base_code)
+            .expect("`base_code` was greater than `event.type_`");
+        match event_type {
+            RRScreenChangeNotify => {
+                ScreenChange(reinterpret(self))
+            },
+            RRNotify => {
+                let event: &XRRNotifyEvent = reinterpret(self);
+                match event.subtype {
+                    RRNotify_CrtcChange => CrtcChange(reinterpret(event)),
+                    RRNotify_OutputChange => OutputChange(reinterpret(event)),
+                    RRNotify_OutputProperty => OutputProperty(reinterpret(event)),
+                    RRNotify_ProviderChange => ProviderChange(reinterpret(event)),
+                    RRNotify_ProviderProperty => ProviderProperty(reinterpret(event)),
+                    RRNotify_ResourceChange => ResourceChange(reinterpret(event)),
+                    _ => Unknown,
+                }
+            },
+            _ => Unknown,
+        }
     }
 }

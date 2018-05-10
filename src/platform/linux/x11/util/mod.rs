@@ -3,6 +3,7 @@
 
 mod atom;
 mod client_msg;
+mod event_match;
 mod format;
 mod geometry;
 mod hint;
@@ -15,6 +16,7 @@ mod wm;
 
 pub use self::atom::*;
 pub use self::client_msg::*;
+pub use self::event_match::*;
 pub use self::format::*;
 pub use self::geometry::*;
 pub use self::hint::*;
@@ -27,9 +29,15 @@ pub use self::wm::*;
 
 use std::mem;
 use std::ptr;
+use std::ops::BitAnd;
 use std::os::raw::*;
 
 use super::{ffi, XConnection, XError};
+
+pub fn reinterpret<'a, A, B>(a: &'a A) -> &'a B {
+    let b_ptr = a as *const _ as *const B;
+    unsafe { &*b_ptr }
+}
 
 pub fn maybe_change<T: PartialEq>(field: &mut Option<T>, value: T) -> bool {
     let wrapped = Some(value);
@@ -39,6 +47,13 @@ pub fn maybe_change<T: PartialEq>(field: &mut Option<T>, value: T) -> bool {
     } else {
         false
     }
+}
+
+pub fn has_flag<T>(bitset: T, flag: T) -> bool
+where T:
+    Copy + PartialEq + BitAnd<T, Output = T>
+{
+    bitset & flag == flag
 }
 
 #[must_use = "This request was made asynchronously, and is still in the output buffer. You must explicitly choose to either `.flush()` (empty the output buffer, sending the request now) or `.queue()` (wait to send the request, allowing you to continue to add more requests without additional round-trips). For more information, see the documentation for `util::flush_requests`."]

@@ -57,19 +57,19 @@ lazy_static!(
 
 pub enum Window {
     X(x11::Window),
-    Wayland(wayland::Window)
+    Wayland(wayland::Window),
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum WindowId {
     X(x11::WindowId),
-    Wayland(wayland::WindowId)
+    Wayland(wayland::WindowId),
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum DeviceId {
     X(x11::DeviceId),
-    Wayland(wayland::DeviceId)
+    Wayland(wayland::DeviceId),
 }
 
 #[derive(Debug, Clone)]
@@ -252,7 +252,7 @@ impl Window {
     #[inline]
     pub fn hidpi_factor(&self) -> f32 {
        match self {
-            &Window::X(ref w) => w.hidpi_factor(),
+            &Window::X(ref w) => w.get_hidpi_factor() as f32,
             &Window::Wayland(ref w) => w.hidpi_factor()
         }
     }
@@ -433,14 +433,17 @@ r#"Failed to initialize any backend!
     #[inline]
     pub fn get_available_monitors(&self) -> VecDeque<MonitorId> {
         match *self {
-            EventsLoop::Wayland(ref evlp) => evlp.get_available_monitors()
-                                    .into_iter()
-                                    .map(MonitorId::Wayland)
-                                    .collect(),
-            EventsLoop::X(ref evlp) => x11::get_available_monitors(evlp.x_connection())
-                                        .into_iter()
-                                        .map(MonitorId::X)
-                                        .collect(),
+            EventsLoop::Wayland(ref evlp) => evlp
+                .get_available_monitors()
+                .into_iter()
+                .map(MonitorId::Wayland)
+                .collect(),
+            EventsLoop::X(ref evlp) => evlp
+                .x_connection()
+                .get_available_monitors()
+                .into_iter()
+                .map(MonitorId::X)
+                .collect(),
         }
     }
 
@@ -448,7 +451,7 @@ r#"Failed to initialize any backend!
     pub fn get_primary_monitor(&self) -> MonitorId {
         match *self {
             EventsLoop::Wayland(ref evlp) => MonitorId::Wayland(evlp.get_primary_monitor()),
-            EventsLoop::X(ref evlp) => MonitorId::X(x11::get_primary_monitor(evlp.x_connection())),
+            EventsLoop::X(ref evlp) => MonitorId::X(evlp.x_connection().get_primary_monitor()),
         }
     }
 
