@@ -72,6 +72,7 @@ impl EventsLoopExt for EventsLoop {
     }
 
     #[inline]
+    #[doc(hidden)]
     fn get_xlib_xconnection(&self) -> Option<Arc<XConnection>> {
         self.events_loop.x_connection().cloned()
     }

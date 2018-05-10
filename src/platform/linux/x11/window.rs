@@ -12,7 +12,6 @@ use CreationError::{self, OsError};
 use platform::MonitorId as PlatformMonitorId;
 use platform::PlatformSpecificWindowBuilderAttributes;
 use platform::x11::MonitorId as X11MonitorId;
-use platform::x11::monitor::get_monitor_for_window;
 use window::MonitorId as RootMonitorId;
 
 use super::{ffi, util, XConnection, XError, WindowId, EventsLoop};
@@ -223,37 +222,13 @@ impl UnownedWindow {
 
             // set size hints
             {
-                let mut size_hints = xconn.alloc_size_hints();
-                (*size_hints).flags = ffi::PSize;
-                (*size_hints).width = dimensions.0 as c_int;
-                (*size_hints).height = dimensions.1 as c_int;
-                if let Some((min_width, min_height)) = window_attrs.min_dimensions {
-                    (*size_hints).flags |= ffi::PMinSize;
-                    (*size_hints).min_width = min_width as c_int;
-                    (*size_hints).min_height = min_height as c_int;
-                }
-                if let Some((max_width, max_height)) = window_attrs.max_dimensions {
-                    (*size_hints).flags |= ffi::PMaxSize;
-                    (*size_hints).max_width = max_width as c_int;
-                    (*size_hints).max_height = max_height as c_int;
-                }
-                if let Some((width_inc, height_inc)) = pl_attribs.resize_increments {
-                    (*size_hints).flags |= ffi::PResizeInc;
-                    (*size_hints).width_inc = width_inc as c_int;
-                    (*size_hints).height_inc = height_inc as c_int;
-                }
-                if let Some((base_width, base_height)) = pl_attribs.base_size {
-                    (*size_hints).flags |= ffi::PBaseSize;
-                    (*size_hints).base_width = base_width as c_int;
-                    (*size_hints).base_height = base_height as c_int;
-                }
-                unsafe {
-                    (xconn.xlib.XSetWMNormalHints)(
-                        xconn.display,
-                        window.xwindow,
-                        size_hints.ptr,
-                    );
-                }//.queue();
+                let mut normal_hints = util::NormalHints::new(xconn);
+                normal_hints.set_size(Some(dimensions));
+                normal_hints.set_min_size(window_attrs.min_dimensions);
+                normal_hints.set_max_size(window_attrs.max_dimensions);
+                normal_hints.set_resize_increments(pl_attribs.resize_increments);
+                normal_hints.set_base_size(pl_attribs.base_size);
+                xconn.set_normal_hints(window.xwindow, normal_hints).queue();
             }
 
             // Set window icons
@@ -396,6 +371,7 @@ impl UnownedWindow {
         )
     }
 
+    #[inline]
     pub fn set_urgent(&self, is_urgent: bool) {
         let mut wm_hints = self.xconn.get_wm_hints(self.xwindow).expect("`XGetWMHints` failed");
         if is_urgent {
@@ -446,6 +422,7 @@ impl UnownedWindow {
         }
     }
 
+    #[inline]
     pub fn set_fullscreen(&self, monitor: Option<RootMonitorId>) {
         self.set_fullscreen_inner(monitor)
             .flush()
@@ -462,8 +439,9 @@ impl UnownedWindow {
         }
     }
 
+    #[inline]
     pub fn get_current_monitor(&self) -> X11MonitorId {
-        get_monitor_for_window(&self.xconn, self.get_rect()).to_owned()
+        self.xconn.get_monitor_for_window(self.get_rect()).to_owned()
     }
 
     fn set_maximized_inner(&self, maximized: bool) -> util::Flusher {
@@ -472,6 +450,7 @@ impl UnownedWindow {
         self.set_netwm(maximized.into(), (horz_atom as c_long, vert_atom as c_long, 0, 0))
     }
 
+    #[inline]
     pub fn set_maximized(&self, maximized: bool) {
         self.set_maximized_inner(maximized)
             .flush()
@@ -499,6 +478,7 @@ impl UnownedWindow {
         }
     }
 
+    #[inline]
     pub fn set_title(&self, title: &str) {
         self.set_title_inner(title)
             .flush()
@@ -522,6 +502,7 @@ impl UnownedWindow {
         )
     }
 
+    #[inline]
     pub fn set_decorations(&self, decorations: bool) {
         self.set_decorations_inner(decorations)
             .flush()
@@ -534,6 +515,7 @@ impl UnownedWindow {
         self.set_netwm(always_on_top.into(), (above_atom as c_long, 0, 0, 0))
     }
 
+    #[inline]
     pub fn set_always_on_top(&self, always_on_top: bool) {
         self.set_always_on_top_inner(always_on_top)
             .flush()
@@ -564,6 +546,7 @@ impl UnownedWindow {
         )
     }
 
+    #[inline]
     pub fn set_window_icon(&self, icon: Option<Icon>) {
         match icon {
             Some(icon) => self.set_icon_inner(icon),
@@ -571,6 +554,7 @@ impl UnownedWindow {
         }.flush().expect("Failed to set icons");
     }
 
+    #[inline]
     pub fn show(&self) {
         unsafe {
             (self.xconn.xlib.XMapRaised)(self.xconn.display, self.xwindow);
@@ -579,6 +563,7 @@ impl UnownedWindow {
         }
     }
 
+    #[inline]
     pub fn hide(&self) {
         unsafe {
             (self.xconn.xlib.XUnmapWindow)(self.xconn.display, self.xwindow);
@@ -592,7 +577,7 @@ impl UnownedWindow {
         (*self.shared_state.lock()).frame_extents = Some(extents);
     }
 
-    pub fn invalidate_cached_frame_extents(&self) {
+    pub(crate) fn invalidate_cached_frame_extents(&self) {
         (*self.shared_state.lock()).frame_extents.take();
     }
 
@@ -616,6 +601,7 @@ impl UnownedWindow {
             .map(|coords| (coords.x_rel_root, coords.y_rel_root))
     }
 
+    #[inline]
     pub fn set_position(&self, mut x: i32, mut y: i32) {
         // There are a few WMs that set client area position rather than window position, so
         // we'll translate for consistency.
@@ -662,6 +648,9 @@ impl UnownedWindow {
 
     #[inline]
     pub fn set_inner_size(&self, width: u32, height: u32) {
+        let dpi_factor = self.get_hidpi_factor();
+        let width = width as f64 * dpi_factor;
+        let height = height as f64 * dpi_factor;
         unsafe {
             (self.xconn.xlib.XResizeWindow)(
                 self.xconn.display,
@@ -673,57 +662,62 @@ impl UnownedWindow {
         }.expect("Failed to call XResizeWindow");
     }
 
-    unsafe fn update_normal_hints<F>(&self, callback: F) -> Result<(), XError>
-        where F: FnOnce(*mut ffi::XSizeHints) -> ()
+    fn update_normal_hints<F>(&self, callback: F) -> Result<(), XError>
+        where F: FnOnce(&mut util::NormalHints) -> ()
     {
-        let size_hints = self.xconn.alloc_size_hints();
-        let mut flags: c_long = mem::uninitialized();
-        (self.xconn.xlib.XGetWMNormalHints)(
-            self.xconn.display,
-            self.xwindow,
-            size_hints.ptr,
-            &mut flags,
-        );
-        self.xconn.check_errors()?;
-
-        callback(size_hints.ptr);
-
-        (self.xconn.xlib.XSetWMNormalHints)(
-            self.xconn.display,
-            self.xwindow,
-            size_hints.ptr,
-        );
-        self.xconn.flush_requests()?;
-
-        Ok(())
+        let mut normal_hints = self.xconn.get_normal_hints(self.xwindow)?;
+        callback(&mut normal_hints);
+        self.xconn.set_normal_hints(self.xwindow, normal_hints).flush()
     }
 
+    #[inline]
     pub fn set_min_dimensions(&self, dimensions: Option<(u32, u32)>) {
-        unsafe {
-            self.update_normal_hints(|size_hints| {
-                if let Some((width, height)) = dimensions {
-                    (*size_hints).flags |= ffi::PMinSize;
-                    (*size_hints).min_width = width as c_int;
-                    (*size_hints).min_height = height as c_int;
-                } else {
-                    (*size_hints).flags &= !ffi::PMinSize;
-                }
-            })
-        }.expect("Failed to call XSetWMNormalHints");
+        self.update_normal_hints(|normal_hints| {
+            normal_hints.set_min_size(dimensions);
+        }).expect("Failed to call `XSetWMNormalHints`");
     }
 
+    #[inline]
     pub fn set_max_dimensions(&self, dimensions: Option<(u32, u32)>) {
+        self.update_normal_hints(|normal_hints| {
+            normal_hints.set_max_size(dimensions);
+        }).expect("Failed to call `XSetWMNormalHints`");
+    }
+
+    pub(crate) fn adjust_for_dpi(
+        &self,
+        old_dpi: f64,
+        new_dpi: f64,
+        width: f64,
+        height: f64,
+    ) -> (f64, f64, util::Flusher) {
+        let scale_factor = new_dpi / old_dpi;
+        let new_width = width * scale_factor;
+        let new_height = height * scale_factor;
+        self.update_normal_hints(|normal_hints| {
+            let dpi_adjuster = |(width, height): (u32, u32)| -> (u32, u32) {
+                let new_width = width as f64 * scale_factor;
+                let new_height = height as f64 * scale_factor;
+                (new_width.round() as u32, new_height.round() as u32)
+            };
+            let max_size = normal_hints.get_max_size().map(dpi_adjuster);
+            let min_size = normal_hints.get_min_size().map(dpi_adjuster);
+            let resize_increments = normal_hints.get_resize_increments().map(dpi_adjuster);
+            let base_size = normal_hints.get_base_size().map(dpi_adjuster);
+            normal_hints.set_max_size(max_size);
+            normal_hints.set_min_size(min_size);
+            normal_hints.set_resize_increments(resize_increments);
+            normal_hints.set_base_size(base_size);
+        }).expect("Failed to update normal hints");
         unsafe {
-            self.update_normal_hints(|size_hints| {
-                if let Some((width, height)) = dimensions {
-                    (*size_hints).flags |= ffi::PMaxSize;
-                    (*size_hints).max_width = width as c_int;
-                    (*size_hints).max_height = height as c_int;
-                } else {
-                    (*size_hints).flags &= !ffi::PMaxSize;
-                }
-            })
-        }.expect("Failed to call XSetWMNormalHints");
+            (self.xconn.xlib.XResizeWindow)(
+                self.xconn.display,
+                self.xwindow,
+                new_width.round() as c_uint,
+                new_height.round() as c_uint,
+            );
+        }
+        (new_width, new_height, util::Flusher::new(&self.xconn))
     }
 
     #[inline]
@@ -756,6 +750,7 @@ impl UnownedWindow {
         self.xwindow as _
     }
 
+    #[inline]
     pub fn get_xcb_connection(&self) -> *mut c_void {
         unsafe {
             (self.xconn.xlib_xcb.XGetXCBConnection)(self.xconn.display) as *mut _
@@ -853,6 +848,7 @@ impl UnownedWindow {
         }
     }
 
+    #[inline]
     pub fn set_cursor(&self, cursor: MouseCursor) {
         *self.cursor.lock() = cursor;
         if *self.cursor_state.lock() != CursorState::Hide {
@@ -898,6 +894,7 @@ impl UnownedWindow {
         Some(cursor)
     }
 
+    #[inline]
     pub fn set_cursor_state(&self, state: CursorState) -> Result<(), String> {
         use CursorState::*;
 
@@ -961,10 +958,12 @@ impl UnownedWindow {
         }
     }
 
-    pub fn hidpi_factor(&self) -> f32 {
+    #[inline]
+    pub fn get_hidpi_factor(&self) -> f64 {
         self.get_current_monitor().hidpi_factor
     }
 
+    #[inline]
     pub fn set_cursor_position(&self, x: i32, y: i32) -> Result<(), ()> {
         unsafe {
             (self.xconn.xlib.XWarpPointer)(

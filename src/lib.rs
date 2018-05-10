@@ -317,6 +317,54 @@ impl std::error::Error for CreationError {
     }
 }
 
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub struct LogicalCoordinates {
+    pub(crate) x: f64,
+    pub(crate) y: f64,
+}
+
+impl LogicalCoordinates {
+    pub fn new(x: f64, y: f64) -> Self {
+        LogicalCoordinates { x, y }
+    }
+
+    pub fn from_physical(&self, physical: PhysicalCoordinates, dpi_factor: f64) -> Self {
+        let (x, y) = physical.to_logical(dpi_factor);
+        Self::new(x, y)
+    }
+
+    pub fn to_physical(&self, dpi_factor: f64) -> (f64, f64) {
+        assert!(dpi_factor > 0.0);
+        let x = self.x * dpi_factor;
+        let y = self.y * dpi_factor;
+        (x, y)
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub struct PhysicalCoordinates {
+    pub(crate) x: f64,
+    pub(crate) y: f64,
+}
+
+impl PhysicalCoordinates {
+    pub fn new(x: f64, y: f64) -> Self {
+        PhysicalCoordinates { x, y }
+    }
+
+    pub fn from_logical(&self, logical: LogicalCoordinates, dpi_factor: f64) -> Self {
+        let (x, y) = logical.to_physical(dpi_factor);
+        Self::new(x, y)
+    }
+
+    pub fn to_logical(&self, dpi_factor: f64) -> (f64, f64) {
+        assert!(dpi_factor > 0.0);
+        let x = self.x / dpi_factor;
+        let y = self.y / dpi_factor;
+        (x, y)
+    }
+}
+
 /// Describes the appearance of the mouse cursor.
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub enum MouseCursor {
@@ -404,7 +452,7 @@ impl Default for CursorState {
 }
 
 /// Attributes to use when creating a window.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct WindowAttributes {
     /// The dimensions of the window. If this is `None`, some platform-specific dimensions will be
     /// used.
