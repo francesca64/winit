@@ -1,5 +1,6 @@
 use std::cell::RefCell;
 use std::collections::VecDeque;
+use std::fmt;
 use std::sync::{Arc, Mutex, Weak};
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -419,6 +420,29 @@ impl Drop for SeatData {
 pub struct MonitorId {
     pub(crate) proxy: Proxy<wl_output::WlOutput>,
     pub(crate) mgr: OutputMgr,
+}
+
+impl fmt::Debug for MonitorId {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        #[derive(Debug)]
+        struct MonitorId {
+            name: Option<String>,
+            native_identifier: u32,
+            dimensions: (u32, u32),
+            position: (i32, i32),
+            hidpi_factor: f32,
+        }
+
+        let monitor_id_proxy = MonitorId {
+            name: self.get_name(),
+            native_identifier: self.get_native_identifier(),
+            dimensions: self.get_dimensions(),
+            position: self.get_position(),
+            hidpi_factor: self.get_hidpi_factor(),
+        };
+
+        monitor_id_proxy.fmt(f)
+    }
 }
 
 impl Clone for MonitorId {

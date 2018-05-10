@@ -52,22 +52,22 @@ lazy_static!(
 
 pub enum Window {
     X(x11::Window),
-    Wayland(wayland::Window)
+    Wayland(wayland::Window),
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum WindowId {
     X(x11::WindowId),
-    Wayland(wayland::WindowId)
+    Wayland(wayland::WindowId),
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum DeviceId {
     X(x11::DeviceId),
-    Wayland(wayland::DeviceId)
+    Wayland(wayland::DeviceId),
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub enum MonitorId {
     X(x11::MonitorId),
     Wayland(wayland::MonitorId),

@@ -393,7 +393,7 @@ pub enum CursorState {
 }
 
 /// Attributes to use when creating a window.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct WindowAttributes {
     /// The dimensions of the window. If this is `None`, some platform-specific dimensions will be
     /// used.
