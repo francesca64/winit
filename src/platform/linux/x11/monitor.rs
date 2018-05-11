@@ -123,11 +123,11 @@ unsafe fn get_output_info(
         resources,
         repr.get_output(),
     );
-    let nameslice = slice::from_raw_parts(
+    let name_slice = slice::from_raw_parts(
         (*output_info).name as *mut u8,
         (*output_info).nameLen as usize,
     );
-    let name = String::from_utf8_lossy(nameslice).into();
+    let name = String::from_utf8_lossy(name_slice).into();
     let hidpi_factor = {
         let (width, height) = repr.get_dimensions();
         let x_mm = (*output_info).mm_width as f32;
@@ -200,7 +200,7 @@ pub fn get_primary_monitor(x: &Arc<XConnection>) -> MonitorId {
     let mut available_monitors = get_available_monitors(x).into_iter();
     available_monitors
         .find(|m| m.primary)
-        // If no monitors were detected as being primary, we just pick one!
+        // If no monitors were detected as being primary, we just pick one ourselves!
         .or_else(|| available_monitors.next())
         .expect("[winit] Failed to find any x11 monitor")
 }

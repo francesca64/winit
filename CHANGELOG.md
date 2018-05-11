@@ -1,6 +1,8 @@
 # Unreleased
 
 - `Icon::to_cardinals` is no longer public, since it was never supposed to be.
+- `MonitorId` now implements `Debug`.
+- When using versions of XRandR less than 1.5, the `primary` field of `MonitorId` is now accurate. It was previously unconditionally true. Monitors are also detected more reliably.
 
 # Version 0.14.0 (2018-05-09)
 
