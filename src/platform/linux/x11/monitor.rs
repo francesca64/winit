@@ -10,7 +10,7 @@ use super::ffi::{
 use super::XConnection;
 
 // Used to test XRandR < 1.5 code path. This should always be committed as false.
-const FORCE_RANDR_COMPAT: bool = true;
+const FORCE_RANDR_COMPAT: bool = false;
 
 #[derive(Debug, Clone)]
 pub struct MonitorId {
@@ -37,16 +37,15 @@ impl MonitorId {
         repr: MonitorRepr,
         primary: bool,
     ) -> Self {
-        unsafe {
-            let (name, hidpi_factor) = get_output_info(xconn, resources, &repr);
-            MonitorId {
-                id,
-                name,
-                hidpi_factor,
-                dimensions: repr.get_dimensions(),
-                position: repr.get_position(),
-                primary,
-            }
+        let (name, hidpi_factor) = unsafe { get_output_info(xconn, resources, &repr) };
+        let (dimensions, position) = unsafe { (repr.get_dimensions(), repr.get_position()) };
+        MonitorId {
+            id,
+            name,
+            hidpi_factor,
+            dimensions,
+            position,
+            primary,
         }
     }
 
@@ -81,7 +80,7 @@ enum MonitorRepr {
 impl MonitorRepr {
     unsafe fn get_output(&self) -> RROutput {
         match *self {
-            // Same member names, but different locations..
+            // Same member names, but different locations within the struct...
             MonitorRepr::Monitor(monitor) => *((*monitor).outputs.offset(0)),
             MonitorRepr::Crtc(crtc) => *((*crtc).outputs.offset(0)),
         }
@@ -151,7 +150,8 @@ pub fn get_available_monitors(xconn: &Arc<XConnection>) -> Vec<MonitorId> {
         let resources = (xconn.xrandr.XRRGetScreenResources)(xconn.display, root);
 
         if xconn.xrandr_1_5.is_some() && !FORCE_RANDR_COMPAT {
-            // We're in XRandR >= 1.5, enumerate Monitors to handle things like MST and videowalls
+            // We're in XRandR >= 1.5, enumerate monitors. This supports things like MST and
+            // videowalls.
             let xrandr_1_5 = xconn.xrandr_1_5.as_ref().unwrap();
             let mut monitor_count = 0;
             let monitors = (xrandr_1_5.XRRGetMonitors)(xconn.display, root, 1, &mut monitor_count);
@@ -168,22 +168,14 @@ pub fn get_available_monitors(xconn: &Arc<XConnection>) -> Vec<MonitorId> {
             }
             (xrandr_1_5.XRRFreeMonitors)(monitors);
         } else {
-            // We're in XRandR < 1.5, enumerate CRTCs. Everything will work but MST and
-            // videowall setups will show more monitors than the logical groups the user
-            // cares about
+            // We're in XRandR < 1.5, enumerate CRTCs. Everything will work except MST and
+            // videowall setups will also show monitors that aren't in the logical groups the user
+            // cares about.
             let primary = (xconn.xrandr.XRRGetOutputPrimary)(xconn.display, root);
-            println!("PRIMARY {:?}", primary);
-            println!("CRTC_COUNT {:?}", (*resources).ncrtc);
             for crtc_index in 0..(*resources).ncrtc {
-                println!("> CRTC #{}", crtc_index);
                 let crtc_id = *((*resources).crtcs.offset(crtc_index as isize));
-                println!("·> ID {}", crtc_id);
                 let crtc = (xconn.xrandr.XRRGetCrtcInfo)(xconn.display, resources, crtc_id);
-                println!("·> WIDTH {}", (*crtc).width);
-                println!("·> HEIGHT {}", (*crtc).height);
-                println!("·> OUTPUT_COUNT {}", (*crtc).noutput);
                 let is_valid = (*crtc).width > 0 && (*crtc).height > 0 && (*crtc).noutput > 0;
-                println!("·> IS_VALID {}", is_valid);
                 if is_valid {
                     let crtc = MonitorRepr::from(crtc);
                     let is_primary = crtc.get_output() == primary;
@@ -205,10 +197,10 @@ pub fn get_available_monitors(xconn: &Arc<XConnection>) -> Vec<MonitorId> {
 
 #[inline]
 pub fn get_primary_monitor(x: &Arc<XConnection>) -> MonitorId {
-    get_available_monitors(x)
-        .into_iter()
+    let mut available_monitors = get_available_monitors(x).into_iter();
+    available_monitors
         .find(|m| m.primary)
-        // 'no primary' case is better handled picking some existing monitor
-        .or_else(|| get_available_monitors(x).into_iter().next())
+        // If no monitors were detected as being primary, we just pick one!
+        .or_else(|| available_monitors.next())
         .expect("[winit] Failed to find any x11 monitor")
 }
