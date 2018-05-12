@@ -86,7 +86,7 @@ pub unsafe fn get_property<T: Debug + Clone>(
                 buf as *mut T,
                 quantity_returned as usize,
             );
-            /*println!(
+            println!(
                 "XGetWindowProperty prop:{:?} fmt:{:02} len:{:02} off:{:02} out:{:02}, buf:{:?}",
                 property,
                 mem::size_of::<T>() * 8,
@@ -94,7 +94,7 @@ pub unsafe fn get_property<T: Debug + Clone>(
                 offset,
                 quantity_returned,
                 new_data,
-            );*/
+            );
             data.extend_from_slice(&new_data);
             // Fun fact: XGetWindowProperty allocates one extra byte at the end.
             (xconn.xlib.XFree)(buf as _); // Don't try to access new_data after this.

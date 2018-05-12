@@ -24,11 +24,11 @@ pub unsafe fn get_atom(xconn: &Arc<XConnection>, name: &[u8]) -> Result<ffi::Ato
             name.as_ptr() as *const c_char,
             ffi::False,
         );
-        /*println!(
+        println!(
             "XInternAtom name:{:?} atom:{:?}",
             name,
             atom,
-        );*/
+        );
         xconn.check_errors()?;
         (*atom_cache_lock).insert(name.to_owned(), atom);
         Ok(atom)
