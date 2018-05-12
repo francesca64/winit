@@ -812,15 +812,14 @@ impl EventsLoop {
                             devices.contains_key(&DeviceId(xev.deviceid)),
                             devices.contains_key(&DeviceId(xev.sourceid)),
                         );
-                        let physical_device = match devices.get_mut(&DeviceId(xev.sourceid)) {
-                            Some(device) => device,
-                            None => return,
-                        };
                         if let Some(all_info) = DeviceInfo::get(&self.display, ffi::XIAllDevices) {
                             for device_info in all_info.iter() {
                                 if device_info.deviceid == xev.sourceid
                                 || device_info.attachment == xev.sourceid {
-                                    physical_device.reset_scroll_position(device_info);
+                                    let device_id = DeviceId(device_info.deviceid);
+                                    if let Some(device) = devices.get_mut(&device_id) {
+                                        device.reset_scroll_position(device_info);
+                                    }
                                 }
                             }
                         }
