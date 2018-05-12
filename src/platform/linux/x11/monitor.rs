@@ -10,7 +10,7 @@ use super::ffi::{
 use super::XConnection;
 
 // Used to test XRandR < 1.5 code path. This should always be committed as false.
-const FORCE_RANDR_COMPAT: bool = false;
+const FORCE_RANDR_COMPAT: bool = true;
 
 #[derive(Debug, Clone)]
 pub struct MonitorId {
@@ -147,6 +147,7 @@ pub fn get_available_monitors(xconn: &Arc<XConnection>) -> Vec<MonitorId> {
     unsafe {
         let root = (xconn.xlib.XDefaultRootWindow)(xconn.display);
         // WARNING: this function is supposedly very slow, on the order of hundreds of ms.
+        // Upon failure, `resources` will be null.
         let resources = (xconn.xrandr.XRRGetScreenResources)(xconn.display, root);
 
         if xconn.xrandr_1_5.is_some() && !FORCE_RANDR_COMPAT {
@@ -175,8 +176,8 @@ pub fn get_available_monitors(xconn: &Arc<XConnection>) -> Vec<MonitorId> {
             for crtc_index in 0..(*resources).ncrtc {
                 let crtc_id = *((*resources).crtcs.offset(crtc_index as isize));
                 let crtc = (xconn.xrandr.XRRGetCrtcInfo)(xconn.display, resources, crtc_id);
-                let is_valid = (*crtc).width > 0 && (*crtc).height > 0 && (*crtc).noutput > 0;
-                if is_valid {
+                let is_active = (*crtc).width > 0 && (*crtc).height > 0 && (*crtc).noutput > 0;
+                if is_active {
                     let crtc = MonitorRepr::from(crtc);
                     let is_primary = crtc.get_output() == primary;
                     available.push(MonitorId::from_repr(
