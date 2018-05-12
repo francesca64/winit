@@ -765,7 +765,7 @@ impl EventsLoop {
                                     let x = unsafe { *value };
                                     if let Some(&mut (_, ref mut info)) = physical_device.scroll_axes.iter_mut().find(|&&mut (axis, _)| axis == i) {
                                         let delta = (x - info.position) / info.increment;
-                                        println!("[ScrollEvent] Delta: {:?}, Increment: {:?}, NewPosition: {:?}, OldPosition: {:?}", delta, info.increment, x, info.position);
+                                        println!("[ScrollEvent] SourceId: {:?}, DeviceId: {:?}, Delta: {:?}, Increment: {:?}, NewPosition: {:?}, OldPosition: {:?}", xev.sourceid, xev.deviceid, delta, info.increment, x, info.position);
                                         info.position = x;
                                         events.push(Event::WindowEvent {
                                             window_id,
