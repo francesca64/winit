@@ -1,7 +1,7 @@
+use std::{self, slice};
 use std::boxed::Box;
 use std::collections::VecDeque;
 use std::os::raw::*;
-use std::slice;
 use std::sync::Weak;
 
 use cocoa::base::{class, id, nil};
@@ -243,8 +243,8 @@ extern fn insert_text(this: &Object, _sel: Sel, string: id, _replacement_range: 
             characters.UTF8String() as *const c_uchar,
             characters.len(),
         );
-        let string = String::from_utf8_lossy(slice);
-        println!("{}", string);
+        println!("{:?}", slice);
+        let string = std::str::from_utf8_unchecked(slice);
 
         let mut events = VecDeque::with_capacity(characters.len());
         for character in string.chars() {
