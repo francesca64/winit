@@ -1,3 +1,6 @@
+// This is a pretty close port of the implementation in GLFW:
+// https://github.com/glfw/glfw/blob/7ef34eb06de54dd9186d3d21a401b2ef819b59e7/src/cocoa_window.m
+
 use std::{slice, str};
 use std::boxed::Box;
 use std::collections::VecDeque;
@@ -10,7 +13,7 @@ use cocoa::foundation::{NSPoint, NSRect, NSSize, NSString, NSUInteger};
 use objc::declare::ClassDecl;
 use objc::runtime::{Class, Object, Protocol, Sel, BOOL};
 
-use {ElementState, Event, KeyboardInput, VirtualKeyCode, WindowEvent, WindowId};
+use {ElementState, Event, KeyboardInput, WindowEvent, WindowId};
 use platform::platform::events_loop::{DEVICE_ID, event_mods, Shared, to_virtual_key_code};
 use platform::platform::input_client::*;
 use platform::platform::util;
@@ -19,11 +22,11 @@ use platform::platform::window::{get_window_id, IdRef};
 struct ViewState {
     window: id,
     shared: Weak<Shared>,
-    queued_keycode: Option<VirtualKeyCode>,
+    raw_characters: Option<String>,
 }
 
 pub fn new_view(window: id, shared: Weak<Shared>) -> IdRef {
-    let state = ViewState { window, shared, queued_keycode: None };
+    let state = ViewState { window, shared, raw_characters: None };
     unsafe {
         // This is free'd in `dealloc`
         let state_ptr = Box::into_raw(Box::new(state)) as *mut c_void;
@@ -170,6 +173,8 @@ extern fn unmark_text(this: &Object, _sel: Sel) {
         let marked_text: id = *this.get_ivar("markedText");
         let mutable_string = marked_text.mutableString();
         let _: () = msg_send![mutable_string, setString:""];
+        let input_context: id = msg_send![this, inputContext];
+        let _: () = msg_send![input_context, discardMarkedText];
     }
 }
 
@@ -196,13 +201,15 @@ extern fn first_rect_for_character_range(
     _range: NSRange,
     _actual_range: *mut c_void, // *mut NSRange
 ) -> NSRect {
-    //const NSRect contentRect = [window->ns.view frame];
     unsafe {
         let state_ptr: *mut c_void = *this.get_ivar("winitState");
         let state = &mut *(state_ptr as *mut ViewState);
-        let frame_rect = NSWindow::frame(state.window);
-        let x = frame_rect.origin.x;
-        let y = util::bottom_left_to_top_left(frame_rect);
+        let content_rect = NSWindow::contentRectForFrameRect_(
+            state.window,
+            NSWindow::frame(state.window),
+        );
+        let x = content_rect.origin.x;
+        let y = util::bottom_left_to_top_left(content_rect);
         NSRect::new(
             NSPoint::new(x as _, y as _),
             NSSize::new(0.0, 0.0),
@@ -228,7 +235,6 @@ extern fn insert_text(this: &Object, _sel: Sel, string: id, _replacement_range: 
             characters.UTF8String() as *const c_uchar,
             characters.len(),
         );
-        println!("insertText {:?}", slice);
         let string = str::from_utf8_unchecked(slice);
 
         // We don't need this now, but it's here if that changes.
@@ -236,11 +242,6 @@ extern fn insert_text(this: &Object, _sel: Sel, string: id, _replacement_range: 
 
         let mut events = VecDeque::with_capacity(characters.len());
         for character in string.chars() {
-            /*let codepoint: UniChar = msg_send![characters, characterAtIndex:index];
-            index += 1;
-            if codepoint & 0xff00 == 0xf700 {
-                continue;
-            }*/
             events.push_back(Event::WindowEvent {
                 window_id: WindowId(get_window_id(state.window)),
                 event: WindowEvent::ReceivedCharacter(character),
@@ -257,6 +258,8 @@ extern fn insert_text(this: &Object, _sel: Sel, string: id, _replacement_range: 
 }
 
 extern fn do_command_by_selector(this: &Object, _sel: Sel, command: Sel) {
+    // Basically, we're sent this message whenever a keyboard event that doesn't generate a "human readable" character
+    // happens, i.e. newlines, tabs, and Ctrl+C.
     unsafe {
         let state_ptr: *mut c_void = *this.get_ivar("winitState");
         let state = &mut *(state_ptr as *mut ViewState);
@@ -267,37 +270,31 @@ extern fn do_command_by_selector(this: &Object, _sel: Sel, command: Sel) {
             return;
         };
 
-        let event = if command == sel!(insertNewline:) {
-            WindowEvent::ReceivedCharacter('\n')
-        } else if command == sel!(noop:) {
-            println!("noop");
-            // O (insertNewlineIgnoringFieldEditor + moveBackward)
-            // W (noop), E (moveToEndOfParagraph), R (noop), T (transpose), P (moveUp), U (noop), Y (yank)
-            let character: u8 = match state.queued_keycode.take() {
-                Some(VirtualKeyCode::C) => 0x03,
-                Some(VirtualKeyCode::D) => 0x04,
-                Some(VirtualKeyCode::V) => 0x16,
-                Some(VirtualKeyCode::Z) => 0x1A,
-                _ => return,
-            };
-            WindowEvent::ReceivedCharacter(character as char)
+        let mut events = VecDeque::with_capacity(1);
+        if command == sel!(insertNewline:) {
+            // The `else` condition would emit the same character, but I'm keeping this here both...
+            // 1) as a reminder for how `doCommandBySelector` works
+            // 2) to make the newline character explicit (...not that it matters)
+            events.push_back(Event::WindowEvent {
+                window_id: WindowId(get_window_id(state.window)),
+                event: WindowEvent::ReceivedCharacter('\n'),
+            });
         } else {
-            println!("doCommandBySelector {:?}", command);
-            // Uncomment these lines if you love beeping sounds!
-            //let next_responder: id = msg_send![this, nextResponder];
-            //if next_responder != nil {
-            //    let _: () = msg_send![next_responder, doCommandBySelector:command];
-            //}
-            return;
+            let raw_characters = state.raw_characters.take();
+            if let Some(raw_characters) = raw_characters {
+                for character in raw_characters.chars() {
+                    events.push_back(Event::WindowEvent {
+                        window_id: WindowId(get_window_id(state.window)),
+                        event: WindowEvent::ReceivedCharacter(character),
+                    });
+                }
+            }
         };
 
         shared.pending_events
             .lock()
             .unwrap()
-            .push_back(Event::WindowEvent {
-                window_id: WindowId(get_window_id(state.window)),
-                event,
-            });
+            .append(&mut events);
     }
 }
 
@@ -323,7 +320,15 @@ extern fn key_down(this: &Object, _sel: Sel, event: id) {
             },
         };
 
-        state.queued_keycode = virtual_keycode;
+        state.raw_characters = {
+            let characters: id = msg_send![event, characters];
+            let slice = slice::from_raw_parts(
+                characters.UTF8String() as *const c_uchar,
+                characters.len(),
+            );
+            let string = str::from_utf8_unchecked(slice);
+            Some(string.to_owned())
+        };
 
         if let Some(shared) = state.shared.upgrade() {
             shared.pending_events
