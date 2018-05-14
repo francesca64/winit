@@ -14,7 +14,7 @@ fn main() {
             winit::Event::WindowEvent { event, .. } => match event {
                 CloseRequested => return winit::ControlFlow::Break,
                 KeyboardInput { input, .. } => println!("{:#?}", input),
-                ReceivedCharacter(c) => println!("ReceivedCharacter {} ({:x?})", c, c as u8),
+                ReceivedCharacter(c) => println!("ReceivedCharacter {} ({:2X?})", c, c as u8),
                 _ => (),
             },
             _ => (),

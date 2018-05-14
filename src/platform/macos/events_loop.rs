@@ -316,101 +316,50 @@ impl EventsLoop {
             });
 
         match event_type {
-            appkit::NSKeyUp => {
-                let vkey =  to_virtual_key_code(NSEvent::keyCode(ns_event));
-
-                let state = ElementState::Released;
-                let code = NSEvent::keyCode(ns_event) as u32;
-                let window_event = WindowEvent::KeyboardInput {
-                    device_id: DEVICE_ID,
-                    input: KeyboardInput {
-                        state: state,
-                        scancode: code,
-                        virtual_keycode: vkey,
-                        modifiers: event_mods(ns_event),
-                    },
-                };
-                Some(into_event(window_event))
-            },
-
             appkit::NSFlagsChanged => {
-                unsafe fn modifier_event(event: cocoa::base::id,
-                                         keymask: NSEventModifierFlags,
-                                         key: events::VirtualKeyCode,
-                                         key_pressed: bool) -> Option<WindowEvent>
-                {
-                    if !key_pressed && NSEvent::modifierFlags(event).contains(keymask) {
-                        let state = ElementState::Pressed;
-                        let code = NSEvent::keyCode(event) as u32;
-                        let window_event = WindowEvent::KeyboardInput {
-                            device_id: DEVICE_ID,
-                            input: KeyboardInput {
-                                state: state,
-                                scancode: code,
-                                virtual_keycode: Some(key),
-                                modifiers: event_mods(event),
-                            },
-                        };
-                        Some(window_event)
-
-                    } else if key_pressed && !NSEvent::modifierFlags(event).contains(keymask) {
-                        let state = ElementState::Released;
-                        let code = NSEvent::keyCode(event) as u32;
-                        let window_event = WindowEvent::KeyboardInput {
-                            device_id: DEVICE_ID,
-                            input: KeyboardInput {
-                                state: state,
-                                scancode: code,
-                                virtual_keycode: Some(key),
-                                modifiers: event_mods(event),
-                            },
-                        };
-                        Some(window_event)
-
-                    } else {
-                        None
-                    }
-                }
-
                 let mut events = std::collections::VecDeque::new();
-                if let Some(window_event) = modifier_event(ns_event,
-                                                           NSEventModifierFlags::NSShiftKeyMask,
-                                                           events::VirtualKeyCode::LShift,
-                                                           self.modifiers.shift_pressed)
-                {
+
+                if let Some(window_event) = modifier_event(
+                    ns_event,
+                    NSEventModifierFlags::NSShiftKeyMask,
+                    self.modifiers.shift_pressed,
+                ) {
                     self.modifiers.shift_pressed = !self.modifiers.shift_pressed;
                     events.push_back(into_event(window_event));
                 }
 
-                if let Some(window_event) = modifier_event(ns_event,
-                                                           NSEventModifierFlags::NSControlKeyMask,
-                                                           events::VirtualKeyCode::LControl,
-                                                           self.modifiers.ctrl_pressed)
-                {
+                if let Some(window_event) = modifier_event(
+                    ns_event,
+                    NSEventModifierFlags::NSControlKeyMask,
+                    self.modifiers.ctrl_pressed,
+                ) {
                     self.modifiers.ctrl_pressed = !self.modifiers.ctrl_pressed;
                     events.push_back(into_event(window_event));
                 }
 
-                if let Some(window_event) = modifier_event(ns_event,
-                                                           NSEventModifierFlags::NSCommandKeyMask,
-                                                           events::VirtualKeyCode::LWin,
-                                                           self.modifiers.win_pressed)
-                {
+                if let Some(window_event) = modifier_event(
+                    ns_event,
+                    NSEventModifierFlags::NSCommandKeyMask,
+                    self.modifiers.win_pressed,
+                ) {
                     self.modifiers.win_pressed = !self.modifiers.win_pressed;
                     events.push_back(into_event(window_event));
                 }
 
-                if let Some(window_event) = modifier_event(ns_event,
-                                                           NSEventModifierFlags::NSAlternateKeyMask,
-                                                           events::VirtualKeyCode::LAlt,
-                                                           self.modifiers.alt_pressed)
-                {
+                if let Some(window_event) = modifier_event(
+                    ns_event,
+                    NSEventModifierFlags::NSAlternateKeyMask,
+                    self.modifiers.alt_pressed,
+                ) {
                     self.modifiers.alt_pressed = !self.modifiers.alt_pressed;
                     events.push_back(into_event(window_event));
                 }
 
                 let event = events.pop_front();
-                self.shared.pending_events.lock().unwrap().extend(events.into_iter());
+                self.shared.pending_events
+                    .lock()
+                    .unwrap()
+                    .extend(events.into_iter());
                 event
             },
 
@@ -593,7 +542,6 @@ impl Proxy {
     }
 }
 
-
 pub fn to_virtual_key_code(code: c_ushort) -> Option<events::VirtualKeyCode> {
     Some(match code {
         0x00 => events::VirtualKeyCode::A,
@@ -739,6 +687,31 @@ pub fn event_mods(event: cocoa::base::id) -> ModifiersState {
         ctrl: flags.contains(NSEventModifierFlags::NSControlKeyMask),
         alt: flags.contains(NSEventModifierFlags::NSAlternateKeyMask),
         logo: flags.contains(NSEventModifierFlags::NSCommandKeyMask),
+    }
+}
+
+unsafe fn modifier_event(
+    ns_event: cocoa::base::id,
+    keymask: NSEventModifierFlags,
+    key_pressed: bool,
+) -> Option<WindowEvent> {
+    if !key_pressed && NSEvent::modifierFlags(ns_event).contains(keymask) 
+    || key_pressed && !NSEvent::modifierFlags(ns_event).contains(keymask) {
+        let state = ElementState::Released;
+        let keycode = NSEvent::keyCode(ns_event);
+        let scancode = keycode as u32;
+        let virtual_keycode = to_virtual_key_code(keycode);
+        Some(WindowEvent::KeyboardInput {
+            device_id: DEVICE_ID,
+            input: KeyboardInput {
+                state,
+                scancode,
+                virtual_keycode,
+                modifiers: event_mods(ns_event),
+            },
+        })
+    } else {
+        None
     }
 }
 

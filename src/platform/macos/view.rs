@@ -1,4 +1,4 @@
-use std::{self, slice, str};
+use std::{slice, str};
 use std::boxed::Box;
 use std::collections::VecDeque;
 use std::os::raw::*;
@@ -7,11 +7,10 @@ use std::sync::Weak;
 use cocoa::base::{class, id, nil};
 use cocoa::appkit::NSWindow;
 use cocoa::foundation::{NSPoint, NSRect, NSSize, NSString, NSUInteger};
-//use core_foundation::string::UniChar;
 use objc::declare::ClassDecl;
 use objc::runtime::{Class, Object, Protocol, Sel, BOOL};
 
-use {ElementState, Event, KeyboardInput, WindowEvent, WindowId};
+use {ElementState, Event, KeyboardInput, VirtualKeyCode, WindowEvent, WindowId};
 use platform::platform::events_loop::{DEVICE_ID, event_mods, Shared, to_virtual_key_code};
 use platform::platform::input_client::*;
 use platform::platform::util;
@@ -20,10 +19,11 @@ use platform::platform::window::{get_window_id, IdRef};
 struct ViewState {
     window: id,
     shared: Weak<Shared>,
+    queued_keycode: Option<VirtualKeyCode>,
 }
 
 pub fn new_view(window: id, shared: Weak<Shared>) -> IdRef {
-    let state = ViewState { window, shared };
+    let state = ViewState { window, shared, queued_keycode: None };
     unsafe {
         // This is free'd in `dealloc`
         let state_ptr = Box::into_raw(Box::new(state)) as *mut c_void;
@@ -83,6 +83,7 @@ lazy_static! {
             do_command_by_selector as extern fn(&Object, Sel, Sel),
         );
         decl.add_method(sel!(keyDown:), key_down as extern fn(&Object, Sel, id));
+        decl.add_method(sel!(keyUp:), key_up as extern fn(&Object, Sel, id));
         decl.add_method(sel!(insertTab:), insert_tab as extern fn(&Object, Sel, id));
         decl.add_method(sel!(insertBackTab:), insert_back_tab as extern fn(&Object, Sel, id));
         decl.add_ivar::<*mut c_void>("winitState");
@@ -95,7 +96,6 @@ lazy_static! {
 }
 
 extern fn dealloc(this: &Object, _sel: Sel) {
-    println!("dealloc");
     unsafe {
         let state: *mut c_void = *this.get_ivar("winitState");
         let tracking_area: id = *this.get_ivar("trackingArea");
@@ -107,7 +107,6 @@ extern fn dealloc(this: &Object, _sel: Sel) {
 }
 
 extern fn init_with_winit(this: &Object, _sel: Sel, state: *mut c_void) -> id {
-    println!("init_with_winit");
     unsafe {
         let this: id = msg_send![this, init];
         if this != nil {
@@ -123,7 +122,6 @@ extern fn init_with_winit(this: &Object, _sel: Sel, state: *mut c_void) -> id {
 }
 
 extern fn has_marked_text(this: &Object, _sel: Sel) -> BOOL {
-    println!("has_marked_text");
     unsafe {
         let marked_text: id = *this.get_ivar("markedText");
         (marked_text.length() > 0) as i8
@@ -131,7 +129,6 @@ extern fn has_marked_text(this: &Object, _sel: Sel) -> BOOL {
 }
 
 extern fn marked_range(this: &Object, _sel: Sel) -> NSRange {
-    println!("marked_range");
     unsafe {
         let marked_text: id = *this.get_ivar("markedText");
         let length = marked_text.length();
@@ -144,7 +141,6 @@ extern fn marked_range(this: &Object, _sel: Sel) -> NSRange {
 }
 
 extern fn selected_range(_this: &Object, _sel: Sel) -> NSRange {
-    println!("selected_range");
     EMPTY_RANGE
 }
 
@@ -155,7 +151,6 @@ extern fn set_marked_text(
     _selected_range: NSRange,
     _replacement_range: NSRange,
 ) {
-    println!("set_marked_text");
     unsafe {
         let marked_text_ref: &mut id = this.get_mut_ivar("markedText");
         let _: () = msg_send![(*marked_text_ref), release];
@@ -171,7 +166,6 @@ extern fn set_marked_text(
 }
 
 extern fn unmark_text(this: &Object, _sel: Sel) {
-    println!("unmark_text");
     unsafe {
         let marked_text: id = *this.get_ivar("markedText");
         let mutable_string = marked_text.mutableString();
@@ -180,7 +174,6 @@ extern fn unmark_text(this: &Object, _sel: Sel) {
 }
 
 extern fn valid_attributes_for_marked_text(_this: &Object, _sel: Sel) -> id {
-    println!("valid_attributes_for_marked_text");
     unsafe { msg_send![class("NSArray"), array] }
 }
 
@@ -190,12 +183,10 @@ extern fn attributed_substring_for_proposed_range(
     _range: NSRange,
     _actual_range: *mut c_void, // *mut NSRange
 ) -> id {
-    println!("attribute_substring_for_proposed_range");
     nil
 }
 
 extern fn character_index_for_point(_this: &Object, _sel: Sel, _point: NSPoint) -> NSUInteger {
-    println!("character_index_for_point");
     0
 }
 
@@ -205,7 +196,6 @@ extern fn first_rect_for_character_range(
     _range: NSRange,
     _actual_range: *mut c_void, // *mut NSRange
 ) -> NSRect {
-    println!("first_rect_for_character_range");
     //const NSRect contentRect = [window->ns.view frame];
     unsafe {
         let state_ptr: *mut c_void = *this.get_ivar("winitState");
@@ -221,11 +211,6 @@ extern fn first_rect_for_character_range(
 }
 
 extern fn insert_text(this: &Object, _sel: Sel, string: id, _replacement_range: NSRange) {
-    /*NSEvent* event = [NSApp currentEvent];
-    const int mods = translateFlags([event modifierFlags]);
-    const int plain = !(mods & GLFW_MOD_SUPER);*/
-    println!("insert_text");
-
     unsafe {
         let state_ptr: *mut c_void = *this.get_ivar("winitState");
         let state = &mut *(state_ptr as *mut ViewState);
@@ -243,8 +228,11 @@ extern fn insert_text(this: &Object, _sel: Sel, string: id, _replacement_range: 
             characters.UTF8String() as *const c_uchar,
             characters.len(),
         );
-        println!("{:?}", slice);
+        println!("insertText {:?}", slice);
         let string = str::from_utf8_unchecked(slice);
+
+        // We don't need this now, but it's here if that changes.
+        //let event: id = msg_send![class("NSApp"), currentEvent];
 
         let mut events = VecDeque::with_capacity(characters.len());
         for character in string.chars() {
@@ -263,16 +251,54 @@ extern fn insert_text(this: &Object, _sel: Sel, string: id, _replacement_range: 
             shared.pending_events
                 .lock()
                 .unwrap()
-                .extend(events.into_iter());
+                .append(&mut events);
         }
     }
 }
 
-extern fn do_command_by_selector(_this: &Object, _sel: Sel, _sel_arg: Sel) {
-    println!("do_command_by_selector");
-    /*unsafe {
-        let _: () = msg_send![class("NSView"), doCommandBySelector:sel_arg];
-    }*/
+extern fn do_command_by_selector(this: &Object, _sel: Sel, command: Sel) {
+    unsafe {
+        let state_ptr: *mut c_void = *this.get_ivar("winitState");
+        let state = &mut *(state_ptr as *mut ViewState);
+
+        let shared = if let Some(shared) = state.shared.upgrade() {
+            shared
+        } else {
+            return;
+        };
+
+        let event = if command == sel!(insertNewline:) {
+            WindowEvent::ReceivedCharacter('\n')
+        } else if command == sel!(noop:) {
+            println!("noop");
+            // O (insertNewlineIgnoringFieldEditor + moveBackward)
+            // W (noop), E (moveToEndOfParagraph), R (noop), T (transpose), P (moveUp), U (noop), Y (yank)
+            let character: u8 = match state.queued_keycode.take() {
+                Some(VirtualKeyCode::C) => 0x03,
+                Some(VirtualKeyCode::D) => 0x04,
+                Some(VirtualKeyCode::V) => 0x16,
+                Some(VirtualKeyCode::Z) => 0x1A,
+                _ => return,
+            };
+            WindowEvent::ReceivedCharacter(character as char)
+        } else {
+            println!("doCommandBySelector {:?}", command);
+            // Uncomment these lines if you love beeping sounds!
+            //let next_responder: id = msg_send![this, nextResponder];
+            //if next_responder != nil {
+            //    let _: () = msg_send![next_responder, doCommandBySelector:command];
+            //}
+            return;
+        };
+
+        shared.pending_events
+            .lock()
+            .unwrap()
+            .push_back(Event::WindowEvent {
+                window_id: WindowId(get_window_id(state.window)),
+                event,
+            });
+    }
 }
 
 extern fn key_down(this: &Object, _sel: Sel, event: id) {
@@ -283,6 +309,7 @@ extern fn key_down(this: &Object, _sel: Sel, event: id) {
         let keycode: c_ushort = msg_send![event, keyCode];
         let virtual_keycode = to_virtual_key_code(keycode);
         let scancode = keycode as u32;
+
         let window_event = Event::WindowEvent {
             window_id: WindowId(get_window_id(state.window)),
             event: WindowEvent::KeyboardInput {
@@ -296,6 +323,8 @@ extern fn key_down(this: &Object, _sel: Sel, event: id) {
             },
         };
 
+        state.queued_keycode = virtual_keycode;
+
         if let Some(shared) = state.shared.upgrade() {
             shared.pending_events
                 .lock()
@@ -305,6 +334,36 @@ extern fn key_down(this: &Object, _sel: Sel, event: id) {
 
         let array: id = msg_send![class("NSArray"), arrayWithObject:event];
         let (): _ = msg_send![this, interpretKeyEvents:array];
+    }
+}
+
+extern fn key_up(this: &Object, _sel: Sel, event: id) {
+    unsafe {
+        let state_ptr: *mut c_void = *this.get_ivar("winitState");
+        let state = &mut *(state_ptr as *mut ViewState);
+
+        let keycode: c_ushort = msg_send![event, keyCode];
+        let virtual_keycode = to_virtual_key_code(keycode);
+        let scancode = keycode as u32;
+        let window_event = Event::WindowEvent {
+            window_id: WindowId(get_window_id(state.window)),
+            event: WindowEvent::KeyboardInput {
+                device_id: DEVICE_ID,
+                input: KeyboardInput {
+                    state: ElementState::Released,
+                    scancode,
+                    virtual_keycode,
+                    modifiers: event_mods(event),
+                },
+            },
+        };
+
+        if let Some(shared) = state.shared.upgrade() {
+            shared.pending_events
+                .lock()
+                .unwrap()
+                .push_back(window_event);
+        }
     }
 }
 

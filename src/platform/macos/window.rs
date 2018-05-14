@@ -694,7 +694,7 @@ impl Window2 {
             let mut decl = ClassDecl::new("WinitWindow", window_superclass).unwrap();
             decl.add_method(sel!(canBecomeMainWindow), yes as extern fn(&Object, Sel) -> BOOL);
             decl.add_method(sel!(canBecomeKeyWindow), yes as extern fn(&Object, Sel) -> BOOL);
-            decl.add_method(sel!(keyDown:), key_down as extern fn(&Object, Sel, id));
+            //decl.add_method(sel!(keyDown:), key_down as extern fn(&Object, Sel, id));
             WINDOW2_CLASS = decl.register();
         });
 
