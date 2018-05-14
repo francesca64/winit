@@ -25,6 +25,8 @@ use std::sync::Weak;
 use std::cell::{Cell, RefCell};
 
 use super::events_loop::{EventsLoop, Shared};
+use platform::platform::util;
+use platform::platform::view::new_view;
 
 use window::MonitorId as RootMonitorId;
 
@@ -46,23 +48,6 @@ struct DelegateState {
 
     // During windowDidResize, we use this to only send Moved if the position changed.
     previous_position: Option<(i32, i32)>,
-}
-
-struct ViewState {
-    window: id,
-    shared: Weak<Shared>,
-}
-
-impl Drop for ViewState {
-    fn drop(&mut self) {
-        println!("DROPPED VS");
-    }
-}
-
-impl Drop for DelegateState {
-    fn drop(&mut self) {
-        println!("DROPPED DS");
-    }
 }
 
 impl DelegateState {
@@ -184,7 +169,7 @@ impl WindowDelegate {
         unsafe fn emit_move_event(state: &mut DelegateState) {
             let frame_rect = NSWindow::frame(*state.window);
             let x = frame_rect.origin.x as _;
-            let y = Window2::bottom_left_to_top_left(frame_rect);
+            let y = util::bottom_left_to_top_left(frame_rect);
             let moved = state.previous_position != Some((x, y));
             if moved {
                 state.previous_position = Some((x, y));
@@ -698,344 +683,18 @@ impl Window2 {
         }
     }
 
-    fn subclass_view() -> *const Class {
-        use ::std::os::raw::*;
-
-        use cocoa::base::class;
-        use cocoa::foundation::{NSRect, NSUInteger};
-        use core_foundation::string::UniChar;
-        use objc::runtime::Protocol;
-
-        use platform::platform::input_client::*;
-
-        static mut VIEW_CLASS: *const Class = 0 as *const Class;
-        static INIT: std::sync::Once = std::sync::ONCE_INIT;
-
-        INIT.call_once(|| unsafe {
-            extern fn dealloc(this: &Object, _sel: Sel) {
-                println!("dealloc");
-                unsafe {
-                    let tracking_area: id = *this.get_ivar("trackingArea");
-                    let marked_text: id = *this.get_ivar("markedText");
-                    let _: () = msg_send![tracking_area, release];
-                    let _: () = msg_send![marked_text, release];
-                    //let _: () = msg_send![this, release];
-                }
-            }
-
-            extern fn init_with_winit(this: &Object, _sel: Sel, state: *mut c_void) -> id {
-                println!("init_with_winit");
-                unsafe {
-                    //let superclass = class.superclass().unwrap();
-                    //let allocated: id = msg_send![class, alloc];
-                    let this: id = msg_send![this, init];
-                    if this != nil {
-                        (*this).set_ivar("winitState", state);
-                        (*this).set_ivar("trackingArea", nil);
-                        let marked_text = <id as NSMutableAttributedString>::init(
-                            NSMutableAttributedString::alloc(nil),
-                        );
-                        (*this).set_ivar("markedText", marked_text);
-                    }
-                    this
-                }
-            }
-
-            extern fn has_marked_text(this: &Object, _sel: Sel) -> BOOL {
-                println!("has_marked_text");
-                unsafe {
-                    let marked_text: id = *this.get_ivar("markedText");
-                    (marked_text.length() > 0) as i8
-                }
-            }
-
-            extern fn marked_range(this: &Object, _sel: Sel) -> NSRange {
-                println!("marked_range");
-                unsafe {
-                    let marked_text: id = *this.get_ivar("markedText");
-                    let length = marked_text.length();
-                    if length > 0 {
-                        NSRange::new(0, length - 1)
-                    } else {
-                        EMPTY_RANGE
-                    }
-                }
-            }
-
-            extern fn selected_range(_this: &Object, _sel: Sel) -> NSRange {
-                println!("selected_range");
-                EMPTY_RANGE
-            }
-
-            extern fn set_marked_text(
-                this: &mut Object,
-                _sel: Sel,
-                string: id,
-                _selected_range: NSRange,
-                _replacement_range: NSRange,
-            ) {
-                println!("set_marked_text");
-                unsafe {
-                    let marked_text_ref: &mut id = this.get_mut_ivar("markedText");
-                    let _: () = msg_send![(*marked_text_ref), release];
-                    let marked_text = NSMutableAttributedString::alloc(nil);
-                    let has_attr = msg_send![string, isKindOfClass:class("NSAttributedString")];
-                    if has_attr {
-                        marked_text.initWithAttributedString(string);
-                    } else {
-                        marked_text.initWithString(string);
-                    };
-                    *marked_text_ref = marked_text;
-                }
-            }
-
-            extern fn unmark_text(this: &Object, _sel: Sel) {
-                println!("unmark_text");
-                unsafe {
-                    let marked_text: id = *this.get_ivar("markedText");
-                    let mutable_string = marked_text.mutableString();
-                    let _: () = msg_send![mutable_string, setString:""];
-                }
-            }
-
-            extern fn valid_attributes_for_marked_text(_this: &Object, _sel: Sel) -> id { // *mut NSArray
-                println!("valid_attributes_for_marked_text");
-                unsafe { msg_send![class("NSArray"), array] }
-            }
-
-            extern fn attributed_substring_for_proposed_range(
-                _this: &Object,
-                _sel: Sel,
-                _range: NSRange,
-                _actual_range: *mut c_void, // *mut NSRange
-            ) -> id {
-                println!("attribute_substring_for_proposed_range");
-                nil
-            }
-
-            extern fn character_index_for_point(_this: &Object, _sel: Sel, _point: NSPoint) -> NSUInteger {
-                println!("character_index_for_point");
-                0
-            }
-
-            extern fn first_rect_for_character_range(
-                this: &Object,
-                _sel: Sel,
-                _range: NSRange,
-                _actual_range: *mut c_void, // *mut NSRange
-            ) -> NSRect {
-                println!("first_rect_for_character_range");
-                //const NSRect contentRect = [window->ns.view frame];
-                unsafe {
-                    let state_ptr: *mut c_void = *this.get_ivar("winitState");
-                    let state = &mut *(state_ptr as *mut ViewState);
-                    let frame_rect = NSWindow::frame(state.window);
-                    let x = frame_rect.origin.x;
-                    let y = Window2::bottom_left_to_top_left(frame_rect);
-                    NSRect::new(
-                        NSPoint::new(x as _, y as _),
-                        NSSize::new(0.0, 0.0),
-                    )
-                }
-            }
-
-            extern fn insert_text(
-                this: &Object,
-                _sel: Sel,
-                string: id,
-                _replacement_range: NSRange,
-            ) {
-                /*NSEvent* event = [NSApp currentEvent];
-                const int mods = translateFlags([event modifierFlags]);
-                const int plain = !(mods & GLFW_MOD_SUPER);*/
-                println!("insert_text");
-
-                unsafe {
-                    let state_ptr: *mut c_void = *this.get_ivar("winitState");
-                    let state = &mut *(state_ptr as *mut ViewState);
-
-                    let has_attr = msg_send![string, isKindOfClass:class("NSAttributedString")];
-                    let characters = if has_attr {
-                        // This is a *mut NSAttributedString
-                        msg_send![string, string]
-                    } else {
-                        // This is already a *mut NSString
-                        string
-                    };
-
-                    let slice = ::std::slice::from_raw_parts(
-                        characters.UTF8String() as *const c_uchar,
-                        characters.len(),
-                    );
-                    let string = String::from_utf8_lossy(slice);
-                    println!("{}", string);
-
-                    let mut events = ::std::collections::VecDeque::with_capacity(characters.len());
-                    let mut index: NSUInteger = 0;
-                    for character in string.chars() {
-                        /*let codepoint: UniChar = msg_send![characters, characterAtIndex:index];
-                        index += 1;
-                        if codepoint & 0xff00 == 0xf700 {
-                            continue;
-                        }*/
-                        events.push_back(Event::WindowEvent {
-                            window_id: ::WindowId(get_window_id(state.window)),
-                            event: WindowEvent::ReceivedCharacter(character),
-                        });
-                        //_glfwInputChar(window, codepoint, mods, plain);
-                    }
-
-                    if let Some(shared) = state.shared.upgrade() {
-                        shared.pending_events
-                            .lock()
-                            .unwrap()
-                            .extend(events.into_iter());
-                    }
-                }
-            }
-
-            extern fn do_command_by_selector(_this: &Object, _sel: Sel, sel_arg: Sel) {
-                println!("do_command_by_selector");
-                /*unsafe {
-                    let _: () = msg_send![class("NSView"), doCommandBySelector:sel_arg];
-                }*/
-            }
-
-            extern fn key_down(this: &Object, _sel: Sel, event: id) {
-                unsafe {
-                    let keycode: c_ushort = msg_send![event, keyCode];
-                    println!("key_donwn {:?}", keycode);
-                    let array: id = msg_send![class("NSArray"), arrayWithObject:event];
-                    let (): _ = msg_send![this, interpretKeyEvents:array];
-                }
-            }
-
-            extern fn insert_tab(this: &Object, _sel: Sel, _sender: id) {
-                unsafe {
-                    let window: id = msg_send![this, window];
-                    let first_responder: id = msg_send![window, firstResponder];
-                    let this_ptr = this as *const _ as *mut _;
-                    if first_responder == this_ptr {
-                        let (): _ = msg_send![window, selectNextKeyView:this];
-                    }
-                }
-            }
-
-            extern fn insert_back_tab(this: &Object, _sel: Sel, _sender: id) {
-                unsafe {
-                    let window: id = msg_send![this, window];
-                    let first_responder: id = msg_send![window, firstResponder];
-                    let this_ptr = this as *const _ as *mut _;
-                    if first_responder == this_ptr {
-                        let (): _ = msg_send![window, selectPreviousKeyView:this];
-                    }
-                }
-            }
-
-            let superclass = Class::get("NSView").unwrap();
-            let mut decl = ClassDecl::new("WinitView", superclass).unwrap();
-            /*decl.add_class_method(
-                sel!(alloc:),
-                init_with_winit as extern fn(&Class, Sel, id) -> id,
-            );*/
-            decl.add_method(
-                sel!(dealloc),
-                dealloc as extern fn(&Object, Sel),
-            );
-            decl.add_method(
-                sel!(initWithWinit:),
-                init_with_winit as extern fn(&Object, Sel, *mut c_void) -> id,
-            );
-            decl.add_method(
-                sel!(hasMarkedText),
-                has_marked_text as extern fn(&Object, Sel) -> BOOL,
-            );
-            decl.add_method(
-                sel!(markedRange),
-                marked_range as extern fn(&Object, Sel) -> NSRange,
-            );
-            decl.add_method(
-                sel!(selectedRange),
-                selected_range as extern fn(&Object, Sel) -> NSRange,
-            );
-            decl.add_method(
-                sel!(setMarkedText:selectedRange:replacementRange:),
-                set_marked_text as extern fn(&mut Object, Sel, id, NSRange, NSRange),
-            );
-            decl.add_method(
-                sel!(unmarkText),
-                unmark_text as extern fn(&Object, Sel),
-            );
-            decl.add_method(
-                sel!(validAttributesForMarkedText),
-                valid_attributes_for_marked_text as extern fn(&Object, Sel) -> id,
-            );
-            decl.add_method(
-                sel!(attributedSubstringForProposedRange:actualRange:),
-                attributed_substring_for_proposed_range
-                    as extern fn(&Object, Sel, NSRange, *mut c_void) -> id,
-            );
-            decl.add_method(
-                sel!(insertText:replacementRange:),
-                insert_text as extern fn(&Object, Sel, id, NSRange),
-            );
-            decl.add_method(
-                sel!(characterIndexForPoint:),
-                character_index_for_point as extern fn(&Object, Sel, NSPoint) -> NSUInteger,
-            );
-            decl.add_method(
-                sel!(firstRectForCharacterRange:actualRange:),
-                first_rect_for_character_range
-                    as extern fn(&Object, Sel, NSRange, *mut c_void) -> NSRect,
-            );
-            decl.add_method(
-                sel!(doCommandBySelector:),
-                do_command_by_selector as extern fn(&Object, Sel, Sel),
-            );
-            decl.add_method(sel!(keyDown:), key_down as extern fn(&Object, Sel, id));
-            decl.add_method(sel!(insertTab:), insert_tab as extern fn(&Object, Sel, id));
-            decl.add_method(sel!(insertBackTab:), insert_back_tab as extern fn(&Object, Sel, id));
-            decl.add_ivar::<*mut c_void>("winitState");
-            decl.add_ivar::<id>("trackingArea");
-            decl.add_ivar::<id>("markedText");
-            let protocol = Protocol::get("NSTextInputClient").unwrap();
-            decl.add_protocol(&protocol);
-            VIEW_CLASS = decl.register();
-        });
-
-        unsafe { VIEW_CLASS }
-    }
-
-    fn new_view(state: ViewState) -> IdRef {
-        use ::std::os::raw::c_void;
-        unsafe {
-            // TODO: This leaks
-            let state_ptr = Box::into_raw(Box::new(state)) as *mut c_void;
-            let class = Window2::subclass_view();
-            let view: id = msg_send![class, alloc];
-            IdRef::new(msg_send![view, initWithWinit:state_ptr])
-        }
-    }
-
     fn class() -> *const Class {
-        use cocoa::base::class;
-        use cocoa::foundation::{NSRect, NSUInteger};
-        use core_foundation::string::UniChar;
-        use objc::runtime::Protocol;
-
-        use platform::platform::input_client::*;
-
         static mut WINDOW2_CLASS: *const Class = 0 as *const Class;
         static INIT: std::sync::Once = std::sync::ONCE_INIT;
 
         INIT.call_once(|| unsafe {
-            extern fn key_down(this: &Object, _sel: Sel, event: id) {}
+            extern fn key_down(_this: &Object, _sel: Sel, _event: id) {}
 
             let window_superclass = Class::get("NSWindow").unwrap();
             let mut decl = ClassDecl::new("WinitWindow", window_superclass).unwrap();
             decl.add_method(sel!(canBecomeMainWindow), yes as extern fn(&Object, Sel) -> BOOL);
             decl.add_method(sel!(canBecomeKeyWindow), yes as extern fn(&Object, Sel) -> BOOL);
-            //decl.add_method(sel!(keyDown:), key_down as extern fn(&Object, Sel, id));
+            decl.add_method(sel!(keyDown:), key_down as extern fn(&Object, Sel, id));
             WINDOW2_CLASS = decl.register();
         });
 
@@ -1135,12 +794,8 @@ impl Window2 {
     }
 
     fn create_view(window: id, shared: Weak<Shared>) -> Option<IdRef> {
-        let state = ViewState {
-            window,
-            shared,
-        };
         unsafe {
-            let view = Window2::new_view(state);
+            let view = new_view(window, shared);
             view.non_nil().map(|view| {
                 view.setWantsBestResolutionOpenGLSurface_(YES);
                 window.setContentView_(*view);
@@ -1167,18 +822,11 @@ impl Window2 {
         unsafe { NSWindow::orderOut_(*self.window, nil); }
     }
 
-    // For consistency with other platforms, this will...
-    // 1. translate the bottom-left window corner into the top-left window corner
-    // 2. translate the coordinate from a bottom-left origin coordinate system to a top-left one
-    fn bottom_left_to_top_left(rect: NSRect) -> i32 {
-        (CGDisplay::main().pixels_high() as f64 - (rect.origin.y + rect.size.height)) as _
-    }
-
     pub fn get_position(&self) -> Option<(i32, i32)> {
         let frame_rect = unsafe { NSWindow::frame(*self.window) };
         Some((
             frame_rect.origin.x as i32,
-            Self::bottom_left_to_top_left(frame_rect),
+            util::bottom_left_to_top_left(frame_rect),
         ))
     }
 
@@ -1191,7 +839,7 @@ impl Window2 {
         };
         Some((
             content_rect.origin.x as i32,
-            Self::bottom_left_to_top_left(content_rect),
+            util::bottom_left_to_top_left(content_rect),
         ))
     }
 

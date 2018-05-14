@@ -40,4 +40,6 @@ impl Window {
 mod events_loop;
 mod input_client;
 mod monitor;
+mod util;
+mod view;
 mod window;
