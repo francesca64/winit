@@ -1074,10 +1074,11 @@ impl Window2 {
     #[inline]
     pub fn set_window_icon(&self, _icon: Option<::Icon>) {
         // macOS doesn't have window icons. Though, there is `setRepresentedFilename`, but that's
-        // semantically distinct and should only be used when the window is in some representing a
-        // specific file/directory. For instance, Terminal.app uses this for the CWD. Anyway, that
-        // should eventually be implemented as `WindowBuilderExt::with_represented_file` or
-        // something, and doesn't have anything to do with this.
+        // semantically distinct and should only be used when the window is in some way
+        // representing a specific file/directory. For instance, Terminal.app uses this for the
+        // CWD. Anyway, that should eventually be implemented as
+        // `WindowBuilderExt::with_represented_file` or something, and doesn't have anything to do
+        // with `set_window_icon`.
         // https://developer.apple.com/library/content/documentation/Cocoa/Conceptual/WinPanel/Tasks/SettingWindowTitle.html
     }
 

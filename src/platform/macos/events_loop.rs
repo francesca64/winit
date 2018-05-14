@@ -6,6 +6,7 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, Weak};
 use super::window::Window2;
 use std;
+use std::os::raw::*;
 use super::DeviceId;
 
 
@@ -315,23 +316,6 @@ impl EventsLoop {
             });
 
         match event_type {
-
-            appkit::NSKeyDown => {
-                let vkey =  to_virtual_key_code(NSEvent::keyCode(ns_event));
-                let state = ElementState::Pressed;
-                let code = NSEvent::keyCode(ns_event) as u32;
-                let window_event = WindowEvent::KeyboardInput {
-                    device_id: DEVICE_ID,
-                    input: KeyboardInput {
-                        state: state,
-                        scancode: code,
-                        virtual_keycode: vkey,
-                        modifiers: event_mods(ns_event),
-                    },
-                };
-                Some(into_event(window_event))
-            },
-
             appkit::NSKeyUp => {
                 let vkey =  to_virtual_key_code(NSEvent::keyCode(ns_event));
 
@@ -610,7 +594,7 @@ impl Proxy {
 }
 
 
-fn to_virtual_key_code(code: u16) -> Option<events::VirtualKeyCode> {
+pub fn to_virtual_key_code(code: c_ushort) -> Option<events::VirtualKeyCode> {
     Some(match code {
         0x00 => events::VirtualKeyCode::A,
         0x01 => events::VirtualKeyCode::S,
@@ -746,7 +730,7 @@ fn to_virtual_key_code(code: u16) -> Option<events::VirtualKeyCode> {
     })
 }
 
-fn event_mods(event: cocoa::base::id) -> ModifiersState {
+pub fn event_mods(event: cocoa::base::id) -> ModifiersState {
     let flags = unsafe {
         NSEvent::modifierFlags(event)
     };
@@ -759,4 +743,4 @@ fn event_mods(event: cocoa::base::id) -> ModifiersState {
 }
 
 // Constant device ID, to be removed when this backend is updated to report real device IDs.
-const DEVICE_ID: ::DeviceId = ::DeviceId(DeviceId);
+pub const DEVICE_ID: ::DeviceId = ::DeviceId(DeviceId);

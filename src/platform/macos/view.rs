@@ -1,4 +1,4 @@
-use std::{self, slice};
+use std::{self, slice, str};
 use std::boxed::Box;
 use std::collections::VecDeque;
 use std::os::raw::*;
@@ -11,8 +11,8 @@ use cocoa::foundation::{NSPoint, NSRect, NSSize, NSString, NSUInteger};
 use objc::declare::ClassDecl;
 use objc::runtime::{Class, Object, Protocol, Sel, BOOL};
 
-use {Event, WindowEvent, WindowId};
-use platform::platform::events_loop::Shared;
+use {ElementState, Event, KeyboardInput, WindowEvent, WindowId};
+use platform::platform::events_loop::{DEVICE_ID, event_mods, Shared, to_virtual_key_code};
 use platform::platform::input_client::*;
 use platform::platform::util;
 use platform::platform::window::{get_window_id, IdRef};
@@ -244,7 +244,7 @@ extern fn insert_text(this: &Object, _sel: Sel, string: id, _replacement_range: 
             characters.len(),
         );
         println!("{:?}", slice);
-        let string = std::str::from_utf8_unchecked(slice);
+        let string = str::from_utf8_unchecked(slice);
 
         let mut events = VecDeque::with_capacity(characters.len());
         for character in string.chars() {
@@ -277,8 +277,32 @@ extern fn do_command_by_selector(_this: &Object, _sel: Sel, _sel_arg: Sel) {
 
 extern fn key_down(this: &Object, _sel: Sel, event: id) {
     unsafe {
+        let state_ptr: *mut c_void = *this.get_ivar("winitState");
+        let state = &mut *(state_ptr as *mut ViewState);
+
         let keycode: c_ushort = msg_send![event, keyCode];
-        println!("key_donwn {:?}", keycode);
+        let virtual_keycode = to_virtual_key_code(keycode);
+        let scancode = keycode as u32;
+        let window_event = Event::WindowEvent {
+            window_id: WindowId(get_window_id(state.window)),
+            event: WindowEvent::KeyboardInput {
+                device_id: DEVICE_ID,
+                input: KeyboardInput {
+                    state: ElementState::Pressed,
+                    scancode,
+                    virtual_keycode,
+                    modifiers: event_mods(event),
+                },
+            },
+        };
+
+        if let Some(shared) = state.shared.upgrade() {
+            shared.pending_events
+                .lock()
+                .unwrap()
+                .push_back(window_event);
+        }
+
         let array: id = msg_send![class("NSArray"), arrayWithObject:event];
         let (): _ = msg_send![this, interpretKeyEvents:array];
     }
