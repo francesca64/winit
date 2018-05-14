@@ -317,7 +317,7 @@ impl EventsLoop {
         match event_type {
 
             appkit::NSKeyDown => {
-                let mut events = std::collections::VecDeque::new();
+                //let mut events = std::collections::VecDeque::new();
                 let received_c_str = foundation::NSString::UTF8String(ns_event.characters());
                 let received_str = std::ffi::CStr::from_ptr(received_c_str);
 
@@ -333,11 +333,11 @@ impl EventsLoop {
                         modifiers: event_mods(ns_event),
                     },
                 };
-                for received_char in std::str::from_utf8(received_str.to_bytes()).unwrap().chars() {
+                /*for received_char in std::str::from_utf8(received_str.to_bytes()).unwrap().chars() {
                     let window_event = WindowEvent::ReceivedCharacter(received_char);
                     events.push_back(into_event(window_event));
                 }
-                self.shared.pending_events.lock().unwrap().extend(events.into_iter());
+                self.shared.pending_events.lock().unwrap().extend(events.into_iter());*/
                 Some(into_event(window_event))
             },
 
