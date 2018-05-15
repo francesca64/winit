@@ -22,16 +22,32 @@ use platform::platform::window::{get_window_id, IdRef};
 struct ViewState {
     window: id,
     shared: Weak<Shared>,
+    ime_spot: Option<(i32, i32)>,
     raw_characters: Option<String>,
 }
 
 pub fn new_view(window: id, shared: Weak<Shared>) -> IdRef {
-    let state = ViewState { window, shared, raw_characters: None };
+    let state = ViewState { window, shared, ime_spot: None, raw_characters: None };
     unsafe {
         // This is free'd in `dealloc`
         let state_ptr = Box::into_raw(Box::new(state)) as *mut c_void;
         let view: id = msg_send![VIEW_CLASS.0, alloc];
         IdRef::new(msg_send![view, initWithWinit:state_ptr])
+    }
+}
+
+pub fn set_ime_spot(view: id, input_context: id, x: i32, y: i32) {
+    unsafe {
+        let state_ptr: *mut c_void = *(*view).get_mut_ivar("winitState");
+        let state = &mut *(state_ptr as *mut ViewState);
+        let content_rect = NSWindow::contentRectForFrameRect_(
+            state.window,
+            NSWindow::frame(state.window),
+        );
+        let base_x = content_rect.origin.x as i32;
+        let base_y = (content_rect.origin.y + content_rect.size.height) as i32;
+        state.ime_spot = Some((base_x + x, base_y - y));
+        let _: () = msg_send![input_context, invalidateCharacterCoordinates];
     }
 }
 
@@ -200,12 +216,16 @@ extern fn first_rect_for_character_range(
     unsafe {
         let state_ptr: *mut c_void = *this.get_ivar("winitState");
         let state = &mut *(state_ptr as *mut ViewState);
-        let content_rect = NSWindow::contentRectForFrameRect_(
-            state.window,
-            NSWindow::frame(state.window),
-        );
-        let x = content_rect.origin.x;
-        let y = util::bottom_left_to_top_left(content_rect);
+        let (x, y) = state.ime_spot.unwrap_or_else(|| {
+            let content_rect = NSWindow::contentRectForFrameRect_(
+                state.window,
+                NSWindow::frame(state.window),
+            );
+            let x = content_rect.origin.x;
+            let y = util::bottom_left_to_top_left(content_rect);
+            (x as i32, y as i32)
+        });
+        
         NSRect::new(
             NSPoint::new(x as _, y as _),
             NSSize::new(0.0, 0.0),

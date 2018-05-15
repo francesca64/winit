@@ -26,7 +26,7 @@ use std::cell::{Cell, RefCell};
 
 use super::events_loop::{EventsLoop, Shared};
 use platform::platform::util;
-use platform::platform::view::new_view;
+use platform::platform::view::{new_view, set_ime_spot};
 
 use window::MonitorId as RootMonitorId;
 
@@ -495,6 +495,7 @@ pub struct Window2 {
     pub view: IdRef,
     pub window: IdRef,
     pub delegate: WindowDelegate,
+    pub input_context: IdRef,
 }
 
 unsafe impl Send for Window2 {}
@@ -596,6 +597,8 @@ impl Window2 {
             },
         };
 
+        let input_context = unsafe { util::create_input_context(*view) };
+
         unsafe {
             if win_attribs.transparent {
                 (*window as id).setOpaque_(NO);
@@ -634,6 +637,7 @@ impl Window2 {
             view: view,
             window: window,
             delegate: WindowDelegate::new(ds),
+            input_context,
         };
 
         // Set fullscreen mode after we setup everything
@@ -1074,6 +1078,11 @@ impl Window2 {
         // `WindowBuilderExt::with_represented_file` or something, and doesn't have anything to do
         // with `set_window_icon`.
         // https://developer.apple.com/library/content/documentation/Cocoa/Conceptual/WinPanel/Tasks/SettingWindowTitle.html
+    }
+
+    #[inline]
+    pub fn set_ime_spot(&self, x: i32, y: i32) {
+        set_ime_spot(*self.view, *self.input_context, x, y);
     }
 
     #[inline]
