@@ -58,15 +58,14 @@ impl DelegateState {
             let curr_mask = self.window.styleMask();
 
             if !curr_mask.contains(NSWindowStyleMask::NSTitledWindowMask) {
-                self.window
-                    .setStyleMask_(NSWindowStyleMask::NSResizableWindowMask);
+                util::set_style_mask(*self.window, *self.view, NSWindowStyleMask::NSResizableWindowMask);
             }
 
             let is_zoomed: BOOL = msg_send![*self.window, isZoomed];
 
             // Roll back temp styles
             if !curr_mask.contains(NSWindowStyleMask::NSTitledWindowMask) {
-                self.window.setStyleMask_(curr_mask);
+                util::set_style_mask(*self.window, *self.view, curr_mask);
             }
 
             is_zoomed != 0
@@ -81,7 +80,7 @@ impl DelegateState {
             let save_style_opt = self.save_style_mask.take();
 
             if let Some(save_style) = save_style_opt {
-                self.window.setStyleMask_(save_style);
+                util::set_style_mask(*self.window, *self.view, save_style);
             }
 
             win_attribs.maximized
@@ -1025,10 +1024,9 @@ impl Window2 {
                 let curr_mask = state.window.styleMask();
 
                 if !curr_mask.contains(NSWindowStyleMask::NSTitledWindowMask) {
-                    state.window.setStyleMask_(
-                        NSWindowStyleMask::NSTitledWindowMask
-                            | NSWindowStyleMask::NSResizableWindowMask,
-                    );
+                    let mask = NSWindowStyleMask::NSTitledWindowMask
+                        | NSWindowStyleMask::NSResizableWindowMask;
+                    util::set_style_mask(*self.window, *self.view, mask);
                     state.save_style_mask.set(Some(curr_mask));
                 }
             }
@@ -1063,8 +1061,7 @@ impl Window2 {
             } else {
                 NSWindowStyleMask::NSBorderlessWindowMask
             };
-
-            state.window.setStyleMask_(new_mask);
+            util::set_style_mask(*state.window, *state.view, new_mask);
         }
     }
 
