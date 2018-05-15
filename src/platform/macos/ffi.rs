@@ -1,3 +1,5 @@
+// TODO: Upstream these
+
 #![allow(non_snake_case, non_upper_case_globals)]
 
 use cocoa::base::{class, id};
@@ -5,7 +7,6 @@ use cocoa::foundation::{NSInteger, NSUInteger};
 use objc;
 
 pub const NSNotFound: NSInteger = NSInteger::max_value();
-pub const EMPTY_RANGE: NSRange = NSRange { location: NSNotFound as NSUInteger, length: 0 };
 
 #[repr(C)]
 pub struct NSRange {
@@ -23,6 +24,7 @@ impl NSRange {
 unsafe impl objc::Encode for NSRange {
     fn encode() -> objc::Encoding {
         let encoding = format!(
+            // TODO: Verify that this is correct
             "{{NSRange={}{}}}",
             NSUInteger::encode().as_str(),
             NSUInteger::encode().as_str(),
@@ -70,10 +72,3 @@ impl NSMutableAttributedString for id {
         msg_send![self, length]
     }
 }
-/*
-pub trait NSTrackingArea: Sized {
-    unsafe fn alloc(_: Self) -> id {
-        msg_send![class("NSTrackingArea"), alloc]
-    }
-}
-*/

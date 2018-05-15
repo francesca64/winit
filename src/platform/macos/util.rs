@@ -1,7 +1,14 @@
 use cocoa::appkit::NSWindowStyleMask;
 use cocoa::base::{class, id, nil};
-use cocoa::foundation::NSRect;
+use cocoa::foundation::{NSRect, NSUInteger};
 use core_graphics::display::CGDisplay;
+
+use platform::platform::ffi;
+
+pub const EMPTY_RANGE: ffi::NSRange = ffi::NSRange {
+    location: ffi::NSNotFound as NSUInteger,
+    length: 0,
+};
 
 // For consistency with other platforms, this will...
 // 1. translate the bottom-left window corner into the top-left window corner

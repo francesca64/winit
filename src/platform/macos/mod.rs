@@ -38,7 +38,7 @@ impl Window {
 }
 
 mod events_loop;
-mod input_client;
+mod ffi;
 mod monitor;
 mod util;
 mod view;

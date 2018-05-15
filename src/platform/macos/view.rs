@@ -15,8 +15,8 @@ use objc::runtime::{Class, Object, Protocol, Sel, BOOL};
 
 use {ElementState, Event, KeyboardInput, WindowEvent, WindowId};
 use platform::platform::events_loop::{DEVICE_ID, event_mods, Shared, to_virtual_key_code};
-use platform::platform::input_client::*;
 use platform::platform::util;
+use platform::platform::ffi::*;
 use platform::platform::window::{get_window_id, IdRef};
 
 struct ViewState {
@@ -90,7 +90,6 @@ lazy_static! {
         decl.add_method(sel!(insertTab:), insert_tab as extern fn(&Object, Sel, id));
         decl.add_method(sel!(insertBackTab:), insert_back_tab as extern fn(&Object, Sel, id));
         decl.add_ivar::<*mut c_void>("winitState");
-        decl.add_ivar::<id>("trackingArea");
         decl.add_ivar::<id>("markedText");
         let protocol = Protocol::get("NSTextInputClient").unwrap();
         decl.add_protocol(&protocol);
@@ -101,9 +100,7 @@ lazy_static! {
 extern fn dealloc(this: &Object, _sel: Sel) {
     unsafe {
         let state: *mut c_void = *this.get_ivar("winitState");
-        let tracking_area: id = *this.get_ivar("trackingArea");
         let marked_text: id = *this.get_ivar("markedText");
-        let _: () = msg_send![tracking_area, release];
         let _: () = msg_send![marked_text, release];
         Box::from_raw(state as *mut ViewState);
     }
@@ -114,7 +111,6 @@ extern fn init_with_winit(this: &Object, _sel: Sel, state: *mut c_void) -> id {
         let this: id = msg_send![this, init];
         if this != nil {
             (*this).set_ivar("winitState", state);
-            (*this).set_ivar("trackingArea", nil);
             let marked_text = <id as NSMutableAttributedString>::init(
                 NSMutableAttributedString::alloc(nil),
             );
@@ -138,13 +134,13 @@ extern fn marked_range(this: &Object, _sel: Sel) -> NSRange {
         if length > 0 {
             NSRange::new(0, length - 1)
         } else {
-            EMPTY_RANGE
+            util::EMPTY_RANGE
         }
     }
 }
 
 extern fn selected_range(_this: &Object, _sel: Sel) -> NSRange {
-    EMPTY_RANGE
+    util::EMPTY_RANGE
 }
 
 extern fn set_marked_text(
