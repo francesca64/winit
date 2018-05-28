@@ -3,7 +3,6 @@
 
 mod atom;
 mod client_msg;
-mod event_match;
 mod format;
 mod geometry;
 mod hint;
@@ -16,7 +15,6 @@ mod wm;
 
 pub use self::atom::*;
 pub use self::client_msg::*;
-pub use self::event_match::*;
 pub use self::format::*;
 pub use self::geometry::*;
 pub use self::hint::*;
