@@ -107,14 +107,16 @@ extern crate percent_encoding;
 #[cfg(any(target_os = "linux", target_os = "freebsd", target_os = "dragonfly", target_os = "openbsd"))]
 extern crate smithay_client_toolkit as sctk;
 
+pub use dpi::*;
 pub use events::*;
 pub use window::{AvailableMonitorsIter, MonitorId};
 pub use icon::*;
 
-mod platform;
+mod dpi;
 mod events;
-mod window;
 mod icon;
+mod platform;
+mod window;
 
 pub mod os;
 
@@ -314,54 +316,6 @@ impl std::fmt::Display for CreationError {
 impl std::error::Error for CreationError {
     fn description(&self) -> &str {
         self.to_string()
-    }
-}
-
-#[derive(Debug, Copy, Clone, PartialEq)]
-pub struct LogicalCoordinates {
-    pub(crate) x: f64,
-    pub(crate) y: f64,
-}
-
-impl LogicalCoordinates {
-    pub fn new(x: f64, y: f64) -> Self {
-        LogicalCoordinates { x, y }
-    }
-
-    pub fn from_physical(&self, physical: PhysicalCoordinates, dpi_factor: f64) -> Self {
-        let (x, y) = physical.to_logical(dpi_factor);
-        Self::new(x, y)
-    }
-
-    pub fn to_physical(&self, dpi_factor: f64) -> (f64, f64) {
-        assert!(dpi_factor > 0.0);
-        let x = self.x * dpi_factor;
-        let y = self.y * dpi_factor;
-        (x, y)
-    }
-}
-
-#[derive(Debug, Copy, Clone, PartialEq)]
-pub struct PhysicalCoordinates {
-    pub(crate) x: f64,
-    pub(crate) y: f64,
-}
-
-impl PhysicalCoordinates {
-    pub fn new(x: f64, y: f64) -> Self {
-        PhysicalCoordinates { x, y }
-    }
-
-    pub fn from_logical(&self, logical: LogicalCoordinates, dpi_factor: f64) -> Self {
-        let (x, y) = logical.to_physical(dpi_factor);
-        Self::new(x, y)
-    }
-
-    pub fn to_logical(&self, dpi_factor: f64) -> (f64, f64) {
-        assert!(dpi_factor > 0.0);
-        let x = self.x / dpi_factor;
-        let y = self.y / dpi_factor;
-        (x, y)
     }
 }
 

@@ -7,14 +7,14 @@ use std::sync::Arc;
 use libc;
 use parking_lot::Mutex;
 
-use {CursorState, Icon, MouseCursor, WindowAttributes};
+use {CursorState, Icon, LogicalCoordinates, LogicalDimensions, MouseCursor, WindowAttributes};
 use CreationError::{self, OsError};
 use platform::MonitorId as PlatformMonitorId;
 use platform::PlatformSpecificWindowBuilderAttributes;
 use platform::x11::MonitorId as X11MonitorId;
 use window::MonitorId as RootMonitorId;
 
-use super::{ffi, util, XConnection, XError, WindowId, EventsLoop};
+use super::{ffi, util, ImeSender, XConnection, XError, WindowId, EventsLoop};
 
 unsafe extern "C" fn visibility_predicate(
     _display: *mut ffi::Display,
@@ -28,7 +28,8 @@ unsafe extern "C" fn visibility_predicate(
 
 #[derive(Debug, Default)]
 pub struct SharedState {
-    pub multitouch: bool,
+    // Window creation assumes a DPI factor of 1.0, so we use this flag to handle that special case.
+    pub is_new_window: bool,
     pub cursor_pos: Option<(f64, f64)>,
     pub size: Option<(u32, u32)>,
     pub position: Option<(i32, i32)>,
@@ -36,7 +37,17 @@ pub struct SharedState {
     pub inner_position_rel_parent: Option<(i32, i32)>,
     pub last_monitor: Option<X11MonitorId>,
     pub dpi_adjusted: Option<(f64, f64)>,
+    // Used to restore position after exiting fullscreen.
+    pub restore_position: Option<(i32, i32)>,
     pub frame_extents: Option<util::FrameExtentsHeuristic>,
+}
+
+impl SharedState {
+    fn new() -> Mutex<Self> {
+        let mut shared_state = SharedState::default();
+        shared_state.is_new_window = true;
+        Mutex::new(shared_state)
+    }
 }
 
 unsafe impl Send for UnownedWindow {}
@@ -49,6 +60,7 @@ pub struct UnownedWindow {
     screen_id: i32, // never changes
     cursor: Mutex<MouseCursor>,
     cursor_state: Mutex<CursorState>,
+    ime_sender: Mutex<ImeSender>,
     pub multitouch: bool, // never changes
     pub shared_state: Mutex<SharedState>,
 }
@@ -149,8 +161,9 @@ impl UnownedWindow {
             screen_id,
             cursor: Default::default(),
             cursor_state: Default::default(),
+            ime_sender: Mutex::new(event_loop.ime_sender.clone()),
             multitouch: window_attrs.multitouch,
-            shared_state: Default::default(),
+            shared_state: SharedState::new(),
         };
 
         // Title must be set before mapping. Some tiling window managers (i.e. i3) use the window
@@ -262,7 +275,7 @@ impl UnownedWindow {
                     &mut supported_ptr,
                 );
                 if supported_ptr == ffi::False {
-                    return Err(OsError(format!("XkbSetDetectableAutoRepeat failed")));
+                    return Err(OsError(format!("`XkbSetDetectableAutoRepeat` failed")));
                 }
             }
 
@@ -285,6 +298,15 @@ impl UnownedWindow {
                 mask
             };
             xconn.select_xinput_events(window.xwindow, ffi::XIAllMasterDevices, mask).queue();
+
+            {
+                let result = event_loop.ime
+                    .borrow_mut()
+                    .create_context(window.xwindow);
+                if let Err(err) = result {
+                    return Err(OsError(format!("Failed to create input context: {:?}", err)));
+                }
+            }
 
             // These properties must be set after mapping
             if window_attrs.maximized {
@@ -324,6 +346,16 @@ impl UnownedWindow {
             .map_err(|x_err| OsError(
                 format!("X server returned error while building window: {:?}", x_err)
             ))
+    }
+
+    fn logicalize_coords(&self, (x, y): (i32, i32)) -> LogicalCoordinates {
+        let dpi = self.get_hidpi_factor();
+        LogicalCoordinates::from_physical((x, y), dpi)
+    }
+
+    fn logicalize_size(&self, (width, height): (u32, u32)) -> LogicalDimensions {
+        let dpi = self.get_hidpi_factor();
+        LogicalDimensions::from_physical((width, height), dpi)
     }
 
     fn set_pid(&self) -> Option<util::Flusher> {
@@ -411,11 +443,17 @@ impl UnownedWindow {
     fn set_fullscreen_inner(&self, monitor: Option<RootMonitorId>) -> util::Flusher {
         match monitor {
             None => {
-                self.set_fullscreen_hint(false)
+                let flusher = self.set_fullscreen_hint(false);
+                if let Some(position) = self.shared_state.lock().restore_position.take() {
+                    self.set_position_inner(position.0, position.1).queue();
+                }
+                flusher
             },
             Some(RootMonitorId { inner: PlatformMonitorId::X(monitor) }) => {
-                let screenpos = monitor.get_position();
-                self.set_position(screenpos.0 as i32, screenpos.1 as i32);
+                let window_position = self.get_position_physical();
+                self.shared_state.lock().restore_position = window_position;
+                let monitor_origin = monitor.get_position();
+                self.set_position_inner(monitor_origin.0 as i32, monitor_origin.1 as i32).queue();
                 self.set_fullscreen_hint(true)
             }
             _ => unreachable!(),
@@ -432,7 +470,7 @@ impl UnownedWindow {
 
     fn get_rect(&self) -> Option<util::Rect> {
         // TODO: This might round-trip more times than needed.
-        if let (Some(position), Some(size)) = (self.get_position(), self.get_outer_size()) {
+        if let (Some(position), Some(size)) = (self.get_position_physical(), self.get_outer_size_physical()) {
             Some(util::Rect::new(position, size))
         } else {
             None
@@ -441,7 +479,17 @@ impl UnownedWindow {
 
     #[inline]
     pub fn get_current_monitor(&self) -> X11MonitorId {
-        self.xconn.get_monitor_for_window(self.get_rect()).to_owned()
+        let monitor = self.shared_state
+            .lock()
+            .last_monitor
+            .as_ref()
+            .cloned();
+        monitor
+            .unwrap_or_else(|| {
+                let monitor = self.xconn.get_monitor_for_window(self.get_rect()).to_owned();
+                self.shared_state.lock().last_monitor = Some(monitor.clone());
+                monitor
+            })
     }
 
     fn set_maximized_inner(&self, maximized: bool) -> util::Flusher {
@@ -581,28 +629,42 @@ impl UnownedWindow {
         (*self.shared_state.lock()).frame_extents.take();
     }
 
-    #[inline]
-    pub fn get_position(&self) -> Option<(i32, i32)> {
+    pub(crate) fn get_position_physical(&self) -> Option<(i32, i32)> {
         let extents = (*self.shared_state.lock()).frame_extents.clone();
         if let Some(extents) = extents {
-            self.get_inner_position().map(|(x, y)|
-                extents.inner_pos_to_outer(x, y)
-            )
+            self.get_inner_position_physical()
+                .map(|(x, y)| extents.inner_pos_to_outer(x, y))
+        } else {
+            self.update_cached_frame_extents();
+            self.get_position_physical()
+        }
+    }
+
+    #[inline]
+    pub fn get_position(&self) -> Option<LogicalCoordinates> {
+        let extents = (*self.shared_state.lock()).frame_extents.clone();
+        if let Some(extents) = extents {
+            self.get_inner_position()
+                .map(|logical| extents.inner_pos_to_outer_logical(logical, self.get_hidpi_factor()))
         } else {
             self.update_cached_frame_extents();
             self.get_position()
         }
     }
 
-    #[inline]
-    pub fn get_inner_position(&self) -> Option<(i32, i32)> {
-        self.xconn.translate_coords(self.xwindow, self.root )
+    pub(crate) fn get_inner_position_physical(&self) -> Option<(i32, i32)> {
+        self.xconn.translate_coords(self.xwindow, self.root)
             .ok()
             .map(|coords| (coords.x_rel_root, coords.y_rel_root))
     }
 
     #[inline]
-    pub fn set_position(&self, mut x: i32, mut y: i32) {
+    pub fn get_inner_position(&self) -> Option<LogicalCoordinates> {
+        self.get_inner_position_physical()
+            .map(|coords| self.logicalize_coords(coords))
+    }
+
+    pub fn set_position_inner(&self, mut x: i32, mut y: i32) -> util::Flusher {
         // There are a few WMs that set client area position rather than window position, so
         // we'll translate for consistency.
         if util::wm_name_is_one_of(&["Enlightenment", "FVWM"]) {
@@ -612,7 +674,7 @@ impl UnownedWindow {
                 y += extents.frame_extents.top as i32;
             } else {
                 self.update_cached_frame_extents();
-                self.set_position(x, y)
+                return self.set_position_inner(x, y);
             }
         }
         unsafe {
@@ -622,35 +684,58 @@ impl UnownedWindow {
                 x as c_int,
                 y as c_int,
             );
-            self.xconn.flush_requests()
-        }.expect("Failed to call XMoveWindow");
+        }
+        util::Flusher::new(&self.xconn)
+    }
+
+    pub fn set_position_physical(&self, x: i32, y: i32) {
+        self.set_position_inner(x, y)
+            .flush()
+            .expect("Failed to call `XMoveWindow`");
     }
 
     #[inline]
-    pub fn get_inner_size(&self) -> Option<(u32, u32)> {
+    pub fn set_position(&self, logical_position: LogicalCoordinates) {
+        let (x, y) = logical_position.to_physical(self.get_hidpi_factor()).into();
+        self.set_position_physical(x, y);
+    }
+
+    pub fn get_inner_size_physical(&self) -> Option<(u32, u32)> {
         self.xconn.get_geometry(self.xwindow)
             .ok()
             .map(|geo| (geo.width, geo.height))
     }
 
     #[inline]
-    pub fn get_outer_size(&self) -> Option<(u32, u32)> {
+    pub fn get_inner_size(&self) -> Option<LogicalDimensions> {
+        self.get_inner_size_physical()
+            .map(|size| self.logicalize_size(size))
+    }
+
+    pub fn get_outer_size_physical(&self) -> Option<(u32, u32)> {
         let extents = (*self.shared_state.lock()).frame_extents.clone();
         if let Some(extents) = extents {
-            self.get_inner_size().map(|(w, h)|
-                extents.inner_size_to_outer(w, h)
-            )
+            self.get_inner_size_physical()
+                .map(|(w, h)| extents.inner_size_to_outer(w, h))
+        } else {
+            self.update_cached_frame_extents();
+            self.get_outer_size_physical()
+        }
+    }
+
+    #[inline]
+    pub fn get_outer_size(&self) -> Option<LogicalDimensions> {
+        let extents = (*self.shared_state.lock()).frame_extents.clone();
+        if let Some(extents) = extents {
+            self.get_inner_size()
+                .map(|logical| extents.inner_size_to_outer_logical(logical, self.get_hidpi_factor()))
         } else {
             self.update_cached_frame_extents();
             self.get_outer_size()
         }
     }
 
-    #[inline]
-    pub fn set_inner_size(&self, width: u32, height: u32) {
-        let dpi_factor = self.get_hidpi_factor();
-        let width = width as f64 * dpi_factor;
-        let height = height as f64 * dpi_factor;
+    pub fn set_inner_size_physical(&self, width: u32, height: u32) {
         unsafe {
             (self.xconn.xlib.XResizeWindow)(
                 self.xconn.display,
@@ -659,7 +744,14 @@ impl UnownedWindow {
                 height as c_uint,
             );
             self.xconn.flush_requests()
-        }.expect("Failed to call XResizeWindow");
+        }.expect("Failed to call `XResizeWindow`");
+    }
+
+    #[inline]
+    pub fn set_inner_size(&self, logical_size: LogicalDimensions) {
+        let dpi_factor = self.get_hidpi_factor();
+        let (width, height) = logical_size.to_physical(dpi_factor).into();
+        self.set_inner_size_physical(width, height);
     }
 
     fn update_normal_hints<F>(&self, callback: F) -> Result<(), XError>
@@ -670,18 +762,30 @@ impl UnownedWindow {
         self.xconn.set_normal_hints(self.xwindow, normal_hints).flush()
     }
 
-    #[inline]
-    pub fn set_min_dimensions(&self, dimensions: Option<(u32, u32)>) {
-        self.update_normal_hints(|normal_hints| {
-            normal_hints.set_min_size(dimensions);
-        }).expect("Failed to call `XSetWMNormalHints`");
+    pub fn set_min_dimensions_physical(&self, dimensions: Option<(u32, u32)>) {
+        self.update_normal_hints(|normal_hints| normal_hints.set_min_size(dimensions))
+            .expect("Failed to call `XSetWMNormalHints`");
     }
 
     #[inline]
-    pub fn set_max_dimensions(&self, dimensions: Option<(u32, u32)>) {
-        self.update_normal_hints(|normal_hints| {
-            normal_hints.set_max_size(dimensions);
-        }).expect("Failed to call `XSetWMNormalHints`");
+    pub fn set_min_dimensions(&self, logical_dimensions: Option<LogicalDimensions>) {
+        let physical_dimensions = logical_dimensions.map(|logical_dimensions| {
+            logical_dimensions.to_physical(self.get_hidpi_factor()).into()
+        });
+        self.set_min_dimensions_physical(physical_dimensions);
+    }
+
+    pub fn set_max_dimensions_physical(&self, dimensions: Option<(u32, u32)>) {
+        self.update_normal_hints(|normal_hints| normal_hints.set_max_size(dimensions))
+            .expect("Failed to call `XSetWMNormalHints`");
+    }
+
+    #[inline]
+    pub fn set_max_dimensions(&self, logical_dimensions: Option<LogicalDimensions>) {
+        let physical_dimensions = logical_dimensions.map(|logical_dimensions| {
+            logical_dimensions.to_physical(self.get_hidpi_factor()).into()
+        });
+        self.set_max_dimensions_physical(physical_dimensions);
     }
 
     pub(crate) fn adjust_for_dpi(
@@ -963,8 +1067,7 @@ impl UnownedWindow {
         self.get_current_monitor().hidpi_factor
     }
 
-    #[inline]
-    pub fn set_cursor_position(&self, x: i32, y: i32) -> Result<(), ()> {
+    pub fn set_cursor_position_physical(&self, x: i32, y: i32) -> Result<(), ()> {
         unsafe {
             (self.xconn.xlib.XWarpPointer)(
                 self.xconn.display,
@@ -979,6 +1082,24 @@ impl UnownedWindow {
             );
             self.xconn.flush_requests().map_err(|_| ())
         }
+    }
+
+    #[inline]
+    pub fn set_cursor_position(&self, logical_position: LogicalCoordinates) -> Result<(), ()> {
+        let (x, y) = logical_position.to_physical(self.get_hidpi_factor()).into();
+        self.set_cursor_position_physical(x, y)
+    }
+
+    pub fn set_ime_spot_physical(&self, x: i32, y: i32) {
+        let _ = self.ime_sender
+            .lock()
+            .send((self.xwindow, x as i16, y as i16));
+    }
+
+    #[inline]
+    pub fn set_ime_spot(&self, logical_position: LogicalCoordinates) {
+        let (x, y) = logical_position.to_physical(self.get_hidpi_factor()).into();
+        self.set_ime_spot_physical(x, y);
     }
 
     #[inline]
