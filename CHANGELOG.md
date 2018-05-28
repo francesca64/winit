@@ -64,7 +64,7 @@
 - On Windows, `WindowBuilder::with_fullscreen` no longer changing monitor display resolution.
 - Overhauled X11 window geometry calculations. `get_position` and `set_position` are more universally accurate across different window managers, and `get_outer_size` actually works now.
 - Fixed SIGSEGV/SIGILL crashes on macOS caused by stabilization of the `!` (never) type.
-- Implement `WindowEvent::HiDpiFactorChanged` for macOS
+- Implement `WindowEvent::HiDPIFactorChanged` for macOS
 - On X11, input methods now work completely out of the box, no longer requiring application developers to manually call `setlocale`. Additionally, when input methods are started, stopped, or restarted on the server end, it's correctly handled.
 - Implemented `Refresh` event on Windows.
 - Properly calculate the minimum and maximum window size on Windows, including window decorations.
@@ -127,7 +127,7 @@
 
 # Version 0.9.0 (2017-12-01)
 
-- Added event `WindowEvent::HiDpiFactorChanged`.
+- Added event `WindowEvent::HiDPIFactorChanged`.
 - Added method `MonitorId::get_hidpi_factor`.
 - Deprecated `get_inner_size_pixels` and `get_inner_size_points` methods of `Window` in favor of
 `get_inner_size`.
