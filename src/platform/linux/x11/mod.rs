@@ -23,7 +23,6 @@ use std::sync::{Arc, mpsc, Weak};
 use std::sync::atomic::{self, AtomicBool};
 
 use libc::{self, setlocale, LC_CTYPE};
-use parking_lot::Mutex;
 
 use {
     ControlFlow,
@@ -32,6 +31,8 @@ use {
     Event,
     EventsLoopClosed,
     KeyboardInput,
+    LogicalCoordinates,
+    LogicalDimensions,
     WindowAttributes,
     WindowEvent,
 };
@@ -407,9 +408,11 @@ impl EventsLoop {
                     // that has a position relative to the parent window.
                     let is_synthetic = xev.send_event == ffi::True;
 
+                    // These are both in physical space.
                     let new_inner_size = (xev.width as u32, xev.height as u32);
                     let new_inner_position = (xev.x as i32, xev.y as i32);
 
+                    let monitor = window.get_current_monitor(); // This must be done *before* locking!
                     let mut shared_state_lock = window.shared_state.lock();
 
                     let (resized, moved) = {
@@ -454,7 +457,8 @@ impl EventsLoop {
                     let mut events = Events::default();
 
                     if resized {
-                        events.resized = Some(WindowEvent::Resized(new_inner_size.0, new_inner_size.1));
+                        let logical_size = LogicalDimensions::from_physical(new_inner_size, monitor.hidpi_factor);
+                        events.resized = Some(WindowEvent::Resized(logical_size));
                     }
 
                     let new_outer_position = if moved || shared_state_lock.position.is_none() {
@@ -470,7 +474,8 @@ impl EventsLoop {
                         let outer = frame_extents.inner_pos_to_outer(new_inner_position.0, new_inner_position.1);
                         shared_state_lock.position = Some(outer);
                         if moved {
-                            events.moved = Some(WindowEvent::Moved(outer.0, outer.1));
+                            let logical_position = LogicalCoordinates::from_physical(outer, monitor.hidpi_factor);
+                            events.moved = Some(WindowEvent::Moved(logical_position));
                         }
                         outer
                     } else {
@@ -481,10 +486,15 @@ impl EventsLoop {
                     // resizing by dragging across monitors *without* dropping the window.
                     let (width, height) = shared_state_lock.dpi_adjusted
                         .unwrap_or_else(|| (xev.width as f64, xev.height as f64));
-                    let last_hidpi_factor = shared_state_lock.last_monitor
-                        .as_ref()
-                        .map(|last_monitor| last_monitor.hidpi_factor)
-                        .unwrap_or(1.0);
+                    let last_hidpi_factor = if shared_state_lock.is_new_window {
+                        shared_state_lock.is_new_window = false;
+                        1.0
+                    } else {
+                        shared_state_lock.last_monitor
+                            .as_ref()
+                            .map(|last_monitor| last_monitor.hidpi_factor)
+                            .unwrap_or(1.0)
+                    };
                     let new_hidpi_factor = {
                         let window_rect = util::Rect::new(new_outer_position, new_inner_size);
                         let monitor = self.xconn.get_monitor_for_window(Some(window_rect));
@@ -493,7 +503,7 @@ impl EventsLoop {
                         new_hidpi_factor
                     };
                     if last_hidpi_factor != new_hidpi_factor {
-                        events.dpi_changed = Some(WindowEvent::HiDPIFactorChanged(new_hidpi_factor as f32));
+                        events.dpi_changed = Some(WindowEvent::HiDpiFactorChanged(new_hidpi_factor));
                         let (new_width, new_height, flusher) = window.adjust_for_dpi(
                             last_hidpi_factor,
                             new_hidpi_factor,
@@ -1055,11 +1065,11 @@ impl EventsLoop {
                                                 if monitor.name == new_monitor.name {
                                                     callback(Event::WindowEvent {
                                                         window_id: mkwid(window_id.0),
-                                                        event: WindowEvent::HiDPIFactorChanged(
-                                                            new_monitor.hidpi_factor as f32
+                                                        event: WindowEvent::HiDpiFactorChanged(
+                                                            new_monitor.hidpi_factor
                                                         ),
                                                     });
-                                                    let (width, height) = match window.get_inner_size() {
+                                                    let (width, height) = match window.get_inner_size_physical() {
                                                         Some(result) => result,
                                                         None => continue,
                                                     };
@@ -1200,16 +1210,13 @@ pub struct WindowId(ffi::Window);
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct DeviceId(c_int);
 
-pub struct Window {
-    pub window: Arc<UnownedWindow>,
-    ime_sender: Mutex<ImeSender>,
-}
+pub struct Window(Arc<UnownedWindow>);
 
 impl Deref for Window {
     type Target = UnownedWindow;
     #[inline]
     fn deref(&self) -> &UnownedWindow {
-        &*self.window
+        &*self.0
     }
 }
 
@@ -1220,35 +1227,19 @@ impl Window {
         pl_attribs: PlatformSpecificWindowBuilderAttributes
     ) -> Result<Self, CreationError> {
         let window = Arc::new(UnownedWindow::new(&event_loop, attribs, pl_attribs)?);
-
         event_loop.windows
             .borrow_mut()
             .insert(window.id(), Arc::downgrade(&window));
-
-        event_loop.ime
-            .borrow_mut()
-            .create_context(window.id().0)
-            .expect("Failed to create input context");
-
-        Ok(Window {
-            window,
-            ime_sender: Mutex::new(event_loop.ime_sender.clone()),
-        })
-    }
-
-    #[inline]
-    pub fn send_xim_spot(&self, x: i16, y: i16) {
-        let _ = self.ime_sender
-            .lock()
-            .send((self.window.id().0, x, y));
+        Ok(Window(window))
     }
 }
 
 impl Drop for Window {
     fn drop(&mut self) {
-        let xconn = &self.window.xconn;
+        let window = self.deref();
+        let xconn = &window.xconn;
         unsafe {
-            (xconn.xlib.XDestroyWindow)(xconn.display, self.window.id().0);
+            (xconn.xlib.XDestroyWindow)(xconn.display, window.id().0);
             // If the window was somehow already destroyed, we'll get a `BadWindow` error, which we don't care about.
             let _ = xconn.check_errors();
         }
