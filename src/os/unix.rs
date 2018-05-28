@@ -94,6 +94,7 @@ pub trait WindowExt {
 
     fn get_xlib_screen_id(&self) -> Option<raw::c_int>;
 
+    #[doc(hidden)]
     fn get_xlib_xconnection(&self) -> Option<Arc<XConnection>>;
 
     /// Set window urgency hint (`XUrgencyHint`). Only relevant on X.
@@ -156,6 +157,7 @@ impl WindowExt for Window {
     }
 
     #[inline]
+    #[doc(hidden)]
     fn get_xlib_xconnection(&self) -> Option<Arc<XConnection>> {
         match self.window {
             LinuxWindow::X(ref w) => Some(w.get_xlib_xconnection()),
