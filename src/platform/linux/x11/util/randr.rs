@@ -1,39 +1,25 @@
 use std::slice;
 
 use super::*;
-use super::ffi::{
-    Bool,
-    Display,
-    RRNotify,
-    RRNotify_CrtcChange,
-    RRNotify_OutputChange,
-    RRNotify_OutputProperty,
-    RRNotify_ProviderChange,
-    RRNotify_ProviderProperty,
-    RRNotify_ResourceChange,
-    RROutput,
-    RRScreenChangeNotify,
-    Window,
-    XRRCrtcChangeNotifyEvent,
-    XRRCrtcInfo,
-    XRRMonitorInfo,
-    XRRNotifyEvent,
-    XRROutputChangeNotifyEvent,
-    XRROutputPropertyNotifyEvent,
-    XRRProviderChangeNotifyEvent,
-    XRRProviderPropertyNotifyEvent,
-    XRRScreenChangeNotifyEvent,
-    XRRScreenResources,
-    XRRResourceChangeNotifyEvent,
-};
+
+pub fn calc_dpi_factor(
+    (width_px, height_px): (u32, u32),
+    (width_mm, height_mm): (u64, u64),
+) -> f64 {
+    let ppmm = (
+        (width_px as f64 * height_px as f64) / (width_mm as f64 * height_mm as f64)
+    ).sqrt();
+    // Quantize 1/12 step size
+    ((ppmm * (12.0 * 25.4 / 96.0)).round() / 12.0).max(1.0)
+}
 
 pub enum MonitorRepr {
-    Monitor(*mut XRRMonitorInfo),
-    Crtc(*mut XRRCrtcInfo),
+    Monitor(*mut ffi::XRRMonitorInfo),
+    Crtc(*mut ffi::XRRCrtcInfo),
 }
 
 impl MonitorRepr {
-    pub unsafe fn get_output(&self) -> RROutput {
+    pub unsafe fn get_output(&self) -> ffi::RROutput {
         match *self {
             // Same member names, but different locations within the struct...
             MonitorRepr::Monitor(monitor) => *((*monitor).outputs.offset(0)),
@@ -56,31 +42,20 @@ impl MonitorRepr {
     }
 }
 
-impl From<*mut XRRMonitorInfo> for MonitorRepr {
-    fn from(monitor: *mut XRRMonitorInfo) -> Self {
+impl From<*mut ffi::XRRMonitorInfo> for MonitorRepr {
+    fn from(monitor: *mut ffi::XRRMonitorInfo) -> Self {
         MonitorRepr::Monitor(monitor)
     }
 }
 
-impl From<*mut XRRCrtcInfo> for MonitorRepr {
-    fn from(crtc: *mut XRRCrtcInfo) -> Self {
+impl From<*mut ffi::XRRCrtcInfo> for MonitorRepr {
+    fn from(crtc: *mut ffi::XRRCrtcInfo) -> Self {
         MonitorRepr::Crtc(crtc)
     }
 }
 
-pub fn calc_dpi_factor(
-    (width_px, height_px): (u32, u32),
-    (width_mm, height_mm): (u64, u64),
-) -> f64 {
-    let ppmm = (
-        (width_px as f64 * height_px as f64) / (width_mm as f64 * height_mm as f64)
-    ).sqrt();
-    // Quantize 1/12 step size
-    ((ppmm * (12.0 * 25.4 / 96.0)).round() / 12.0).max(1.0)
-}
-
 impl XConnection {
-    pub unsafe fn get_output_info(&self, resources: *mut XRRScreenResources, repr: &MonitorRepr) -> (String, f64) {
+    pub unsafe fn get_output_info(&self, resources: *mut ffi::XRRScreenResources, repr: &MonitorRepr) -> (String, f64) {
         let output_info = (self.xrandr.XRRGetOutputInfo)(
             self.display,
             resources,
@@ -97,59 +72,5 @@ impl XConnection {
         );
         (self.xrandr.XRRFreeOutputInfo)(output_info);
         (name, hidpi_factor)
-    }
-}
-
-// At present, we're only subscribed to `CrtcChange`, `OutputProperty`, and `ScreenChange`.
-#[derive(Debug)]
-#[allow(dead_code)]
-pub enum RandREvent<'a> {
-    CrtcChange(&'a XRRCrtcChangeNotifyEvent),
-    OutputChange(&'a XRROutputChangeNotifyEvent),
-    OutputProperty(&'a XRROutputPropertyNotifyEvent),
-    ProviderChange(&'a XRRProviderChangeNotifyEvent),
-    ProviderProperty(&'a XRRProviderPropertyNotifyEvent),
-    // This seems to be what's usually sent.
-    ScreenChange(&'a XRRScreenChangeNotifyEvent),
-    ResourceChange(&'a XRRResourceChangeNotifyEvent),
-    Unknown,
-}
-
-#[repr(C)]
-#[derive(Debug)]
-#[allow(dead_code)]
-pub struct XRRAnyEvent {
-    pub type_: c_int,
-    pub serial: c_ulong,
-    pub send_event: Bool,
-    pub display: *mut Display,
-    pub window: Window,
-}
-
-#[allow(non_upper_case_globals)]
-impl<'a> EventMatch<'a, RandREvent<'a>> for XRRAnyEvent {
-    fn get_match(&'a self, base_code: c_int) -> RandREvent {
-        use self::RandREvent::*;
-        let event_type = self.type_
-            .checked_sub(base_code)
-            .expect("`base_code` was greater than `event.type_`");
-        match event_type {
-            RRScreenChangeNotify => {
-                ScreenChange(reinterpret(self))
-            },
-            RRNotify => {
-                let event: &XRRNotifyEvent = reinterpret(self);
-                match event.subtype {
-                    RRNotify_CrtcChange => CrtcChange(reinterpret(event)),
-                    RRNotify_OutputChange => OutputChange(reinterpret(event)),
-                    RRNotify_OutputProperty => OutputProperty(reinterpret(event)),
-                    RRNotify_ProviderChange => ProviderChange(reinterpret(event)),
-                    RRNotify_ProviderProperty => ProviderProperty(reinterpret(event)),
-                    RRNotify_ResourceChange => ResourceChange(reinterpret(event)),
-                    _ => Unknown,
-                }
-            },
-            _ => Unknown,
-        }
     }
 }
