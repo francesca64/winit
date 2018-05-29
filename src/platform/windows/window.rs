@@ -27,7 +27,7 @@ use {
 };
 
 use platform::platform::{Cursor, EventsLoop, PlatformSpecificWindowBuilderAttributes, WindowId};
-use platform::platform::dpi::{BASE_DPI, become_dpi_aware, get_window_dpi, get_window_scale_factor};
+use platform::platform::dpi::{BASE_DPI, get_window_dpi, get_window_scale_factor};
 use platform::platform::events_loop::{self, DESTROY_MSG_ID, INITIAL_DPI_MSG_ID};
 use platform::platform::icon::{self, IconType, WinIcon};
 use platform::platform::raw_input::register_all_mice_and_keyboards_for_raw_input;
@@ -61,19 +61,16 @@ unsafe impl Sync for Window {}
 // and it added fifty pixels to the top.
 // From this we can perform the reverse calculation: Instead of expanding the rectangle, we shrink it.
 unsafe fn unjust_window_rect(prc: &mut RECT, style: DWORD, ex_style: DWORD) -> BOOL {
-    let mut rc: RECT = mem::zeroed();
-
+    let mut rc: RECT = mem::uninitialized();
     winuser::SetRectEmpty(&mut rc);
-
-    let frc = winuser::AdjustWindowRectEx(&mut rc, style, 0, ex_style);
-    if frc != 0 {
+    let status = winuser::AdjustWindowRectEx(&mut rc, style, 0, ex_style);
+    if status != 0 {
         prc.left -= rc.left;
         prc.top -= rc.top;
         prc.right -= rc.right;
         prc.bottom -= rc.bottom;
     }
-
-    frc
+    status
 }
 
 impl Window {
@@ -83,18 +80,13 @@ impl Window {
         pl_attr: PlatformSpecificWindowBuilderAttributes,
     ) -> Result<Window, CreationError> {
         let (tx, rx) = channel();
-
-        unsafe { become_dpi_aware(events_loop.dpi_aware) };
-
         let proxy = events_loop.create_proxy();
-
         events_loop.execute_in_thread(move |inserter| {
             // We dispatch an `init` function because of code style.
             // First person to remove the need for cloning here gets a cookie!
             let win = unsafe { init(w_attr.clone(), pl_attr.clone(), inserter, proxy.clone()) };
             let _ = tx.send(win);
         });
-
         rx.recv().unwrap()
     }
 
@@ -123,12 +115,8 @@ impl Window {
     }
 
     pub(crate) fn get_position_physical(&self) -> Option<(i32, i32)> {
-        let mut rect: RECT = unsafe { mem::uninitialized() };
-        if unsafe { winuser::GetWindowRect(self.window.0, &mut rect) } != 0 {
-            Some((rect.left as i32, rect.top as i32))
-        } else {
-            None
-        }
+        util::get_window_rect(self.window.0)
+            .map(|rect| (rect.left as i32, rect.top as i32))
     }
 
     #[inline]
@@ -200,14 +188,11 @@ impl Window {
     }
 
     pub(crate) fn get_outer_size_physical(&self) -> Option<(u32, u32)> {
-        let mut rect: RECT = unsafe { mem::uninitialized() };
-        if unsafe { winuser::GetWindowRect(self.window.0, &mut rect) } == 0 {
-            return None;
-        }
-        Some((
-            (rect.right - rect.left) as u32,
-            (rect.bottom - rect.top) as u32,
-        ))
+        util::get_window_rect(self.window.0)
+            .map(|rect| (
+                (rect.right - rect.left) as u32,
+                (rect.bottom - rect.top) as u32,
+            ))
     }
 
     #[inline]
@@ -539,10 +524,7 @@ impl Window {
         let mut window_state = self.window_state.lock().unwrap();
 
         if window_state.attributes.fullscreen.is_none() || window_state.saved_window_info.is_none() {
-            let mut rect: RECT = mem::zeroed();
-
-            winuser::GetWindowRect(self.window.0, &mut rect);
-
+            let rect = util::get_window_rect(self.window.0).expect("`GetWindowRect` failed");
             window_state.saved_window_info = Some(events_loop::SavedWindowInfo {
                 style: winuser::GetWindowLongW(self.window.0, winuser::GWL_STYLE),
                 ex_style: winuser::GetWindowLongW(self.window.0, winuser::GWL_EXSTYLE),

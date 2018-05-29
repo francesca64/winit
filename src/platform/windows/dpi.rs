@@ -13,28 +13,16 @@ use winapi::shared::windef::{
     HWND,
 };
 use winapi::shared::winerror::S_OK;
-use winapi::um::libloaderapi::{
-    GetProcAddress,
-    LoadLibraryA,
-};
+use winapi::um::libloaderapi::{GetProcAddress, LoadLibraryA};
 use winapi::um::shellscalingapi::{
     MDT_EFFECTIVE_DPI,
     MONITOR_DPI_TYPE,
     PROCESS_DPI_AWARENESS,
     PROCESS_PER_MONITOR_DPI_AWARE,
 };
-use winapi::um::wingdi::{
-    GetDeviceCaps,
-    LOGPIXELSX,
-};
-use winapi::um::winnt::{
-    HRESULT,
-    LPCSTR,
-};
-use winapi::um::winuser::{
-    self,
-    MONITOR_DEFAULTTONEAREST,
-};
+use winapi::um::wingdi::{GetDeviceCaps, LOGPIXELSX};
+use winapi::um::winnt::{HRESULT, LPCSTR};
+use winapi::um::winuser::{self, MONITOR_DEFAULTTONEAREST};
 
 const DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2: DPI_AWARENESS_CONTEXT = -4isize as _;
 
@@ -96,13 +84,10 @@ lazy_static! {
     );
 }
 
-pub unsafe fn become_dpi_aware(enable: bool) {
-    if !enable {
-        return;
-    }
-
+pub fn become_dpi_aware(enable: bool) {
+    if !enable { return; }
     static ENABLE_DPI_AWARENESS: Once = ONCE_INIT;
-    ENABLE_DPI_AWARENESS.call_once(|| {
+    ENABLE_DPI_AWARENESS.call_once(|| { unsafe {
         if let Some(SetProcessDpiAwarenessContext) = get_function!(
             "user32.dll",
             SetProcessDpiAwarenessContext
@@ -127,28 +112,31 @@ pub unsafe fn become_dpi_aware(enable: bool) {
             // We are on Vista or later.
             SetProcessDPIAware();
         }
-    });
+    } });
 }
 
-pub unsafe fn enable_non_client_dpi_scaling(hwnd: HWND) {
-    if let Some(EnableNonClientDpiScaling) = *ENABLE_NON_CLIENT_DPI_SCALING {
-        EnableNonClientDpiScaling(hwnd);
-    }
-}
-
-pub unsafe fn get_monitor_dpi(hmonitor: HMONITOR) -> Option<u32> {
-    if let Some(GetDpiForMonitor) = *GET_DPI_FOR_MONITOR {
-        // We are on Windows 8.1 or later.
-        let mut dpi_x = 0;
-        let mut dpi_y = 0;
-        if GetDpiForMonitor(hmonitor, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y) == S_OK {
-            // MSDN says that "the values of *dpiX and *dpiY are identical. You only need to
-            // record one of the values to determine the DPI and respond appropriately".
-            // https://msdn.microsoft.com/en-us/library/windows/desktop/dn280510(v=vs.85).aspx
-            return Some(dpi_x as u32)
+pub fn enable_non_client_dpi_scaling(hwnd: HWND) {
+    unsafe {
+        if let Some(EnableNonClientDpiScaling) = *ENABLE_NON_CLIENT_DPI_SCALING {
+            EnableNonClientDpiScaling(hwnd);
         }
     }
+}
 
+pub fn get_monitor_dpi(hmonitor: HMONITOR) -> Option<u32> {
+    unsafe {
+        if let Some(GetDpiForMonitor) = *GET_DPI_FOR_MONITOR {
+            // We are on Windows 8.1 or later.
+            let mut dpi_x = 0;
+            let mut dpi_y = 0;
+            if GetDpiForMonitor(hmonitor, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y) == S_OK {
+                // MSDN says that "the values of *dpiX and *dpiY are identical. You only need to
+                // record one of the values to determine the DPI and respond appropriately".
+                // https://msdn.microsoft.com/en-us/library/windows/desktop/dn280510(v=vs.85).aspx
+                return Some(dpi_x as u32)
+            }
+        }
+    }
     None
 }
 
@@ -195,14 +183,11 @@ pub unsafe fn get_window_dpi(hwnd: HWND, hdc: HDC) -> u32 {
 
 // Use this when you have both the HWND and HDC on hand (i.e. window methods)
 pub fn get_window_scale_factor(hwnd: HWND, hdc: HDC) -> f64 {
-    assert!(!hwnd.is_null());
-    assert!(!hdc.is_null());
     unsafe { dpi_to_scale_factor(get_window_dpi(hwnd, hdc)) }
 }
 
 // Use this when you only have the HWND (i.e. event handling)
 pub fn get_hwnd_scale_factor(hwnd: HWND) -> f64 {
-    assert!(!hwnd.is_null());
     let hdc = unsafe { winuser::GetDC(hwnd) };
     if hdc.is_null() {
         panic!("[winit] `GetDC` returned null!");

@@ -53,7 +53,12 @@ use {
 };
 use events::{DeviceEvent, Touch, TouchPhase};
 use platform::platform::{event, Cursor, WindowId, DEVICE_ID, wrap_device_id, util};
-use platform::platform::dpi::{dpi_to_scale_factor, enable_non_client_dpi_scaling, get_hwnd_scale_factor};
+use platform::platform::dpi::{
+    become_dpi_aware,
+    dpi_to_scale_factor,
+    enable_non_client_dpi_scaling,
+    get_hwnd_scale_factor,
+};
 use platform::platform::event::{handle_extended_keys, process_key_params, vkey_to_winit_vkey};
 use platform::platform::raw_input::{get_raw_input_data, get_raw_mouse_button_state};
 use platform::platform::window::adjust_size;
@@ -109,8 +114,6 @@ pub struct EventsLoop {
     // The mutex's value is `true` when it's blocked, and should be set to false when it's done
     // blocking. That's done by the parent thread when it receives a Resized event.
     win32_block_loop: Arc<(Mutex<bool>, Condvar)>,
-    // Whether to enable process-global DPI awareness.
-    pub(super) dpi_aware: bool,
 }
 
 impl EventsLoop {
@@ -119,6 +122,8 @@ impl EventsLoop {
     }
 
     pub fn with_dpi_awareness(dpi_aware: bool) -> EventsLoop {
+        become_dpi_aware(dpi_aware);
+
         // The main events transfer channel.
         let (tx, rx) = mpsc::channel();
         let win32_block_loop = Arc::new((Mutex::new(false), Condvar::new()));
@@ -188,7 +193,6 @@ impl EventsLoop {
             thread_id,
             receiver: rx,
             win32_block_loop,
-            dpi_aware
         }
     }
 
