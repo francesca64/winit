@@ -385,12 +385,15 @@ impl EventsLoop {
                 } else {
                     window.view.convertPoint_fromView_(window_point, cocoa::base::nil)
                 };
-                let view_rect = NSView::frame(*window.view);
-                let scale_factor = window.hidpi_factor();
 
-                let x = (scale_factor * view_point.x as f32) as f64;
-                let y = (scale_factor * (view_rect.size.height - view_point.y) as f32) as f64;
-                let window_event = WindowEvent::CursorMoved { device_id: DEVICE_ID, position: (x, y), modifiers: event_mods(ns_event) };
+                let view_rect = NSView::frame(*window.view);
+                let x = view_point.x as f64;
+                let y = (view_rect.size.height - view_point.y) as f64;
+                let window_event = WindowEvent::CursorMoved {
+                    device_id: DEVICE_ID,
+                    position: (x, y).into(),
+                    modifiers: event_mods(ns_event),
+                };
                 let event = Event::WindowEvent { window_id: ::WindowId(window.id()), event: window_event };
 
                 self.shared.pending_events.lock().unwrap().push_back(event);
@@ -419,27 +422,30 @@ impl EventsLoop {
                 } else {
                     window.view.convertPoint_fromView_(window_point, cocoa::base::nil)
                 };
-                let view_rect = NSView::frame(*window.view);
-                let scale_factor = window.hidpi_factor();
 
                 let mut events = std::collections::VecDeque::new();
 
                 {
-                    let x = (scale_factor * view_point.x as f32) as f64;
-                    let y = (scale_factor * (view_rect.size.height - view_point.y) as f32) as f64;
-                    let window_event = WindowEvent::CursorMoved { device_id: DEVICE_ID, position: (x, y), modifiers: event_mods(ns_event) };
+                    let view_rect = NSView::frame(*window.view);
+                    let x = view_point.x as f64;
+                    let y = (view_rect.size.height - view_point.y) as f64;
+                    let window_event = WindowEvent::CursorMoved {
+                        device_id: DEVICE_ID,
+                        position: (x, y).into(),
+                        modifiers: event_mods(ns_event),
+                    };
                     let event = Event::WindowEvent { window_id: ::WindowId(window.id()), event: window_event };
                     events.push_back(event);
                 }
 
-                let delta_x = (scale_factor * ns_event.deltaX() as f32) as f64;
+                let delta_x = ns_event.deltaX() as f64;
                 if delta_x != 0.0 {
                     let motion_event = DeviceEvent::Motion { axis: 0, value: delta_x };
                     let event = Event::DeviceEvent{ device_id: DEVICE_ID, event: motion_event };
                     events.push_back(event);
                 }
 
-                let delta_y = (scale_factor * ns_event.deltaY() as f32) as f64;
+                let delta_y = ns_event.deltaY() as f64;
                 if delta_y != 0.0 {
                     let motion_event = DeviceEvent::Motion { axis: 1, value: delta_y };
                     let event = Event::DeviceEvent{ device_id: DEVICE_ID, event: motion_event };
@@ -459,19 +465,22 @@ impl EventsLoop {
 
             appkit::NSScrollWheel => {
                 // If none of the windows received the scroll, return `None`.
-                let window = match maybe_window {
-                    Some(window) => window,
-                    None => return None,
-                };
+                if maybe_window.is_none() {
+                    return None;
+                }
 
                 use events::MouseScrollDelta::{LineDelta, PixelDelta};
-                let scale_factor = window.hidpi_factor();
                 let delta = if ns_event.hasPreciseScrollingDeltas() == cocoa::base::YES {
-                    PixelDelta(scale_factor * ns_event.scrollingDeltaX() as f32,
-                               scale_factor * ns_event.scrollingDeltaY() as f32)
+                    PixelDelta((
+                        ns_event.scrollingDeltaX() as f64,
+                        ns_event.scrollingDeltaY() as f64,
+                    ).into())
                 } else {
-                    LineDelta(scale_factor * ns_event.scrollingDeltaX() as f32,
-                              scale_factor * ns_event.scrollingDeltaY() as f32)
+                    // TODO: This is probably wrong
+                    LineDelta(
+                        ns_event.scrollingDeltaX() as f32,
+                        ns_event.scrollingDeltaY() as f32,
+                    )
                 };
                 let phase = match ns_event.phase() {
                     NSEventPhase::NSEventPhaseMayBegin | NSEventPhase::NSEventPhaseBegan => TouchPhase::Started,
@@ -482,11 +491,15 @@ impl EventsLoop {
                     device_id: DEVICE_ID,
                     event: DeviceEvent::MouseWheel {
                         delta: if ns_event.hasPreciseScrollingDeltas() == cocoa::base::YES {
-                            PixelDelta(ns_event.scrollingDeltaX() as f32,
-                                       ns_event.scrollingDeltaY() as f32)
+                            PixelDelta((
+                                ns_event.scrollingDeltaX() as f64,
+                                ns_event.scrollingDeltaY() as f64,
+                            ).into())
                         } else {
-                            LineDelta(ns_event.scrollingDeltaX() as f32,
-                                      ns_event.scrollingDeltaY() as f32)
+                            LineDelta(
+                                ns_event.scrollingDeltaX() as f32,
+                                ns_event.scrollingDeltaY() as f32,
+                            )
                         },
                     }
                 });
@@ -695,7 +708,7 @@ unsafe fn modifier_event(
     keymask: NSEventModifierFlags,
     key_pressed: bool,
 ) -> Option<WindowEvent> {
-    if !key_pressed && NSEvent::modifierFlags(ns_event).contains(keymask) 
+    if !key_pressed && NSEvent::modifierFlags(ns_event).contains(keymask)
     || key_pressed && !NSEvent::modifierFlags(ns_event).contains(keymask) {
         let state = ElementState::Released;
         let keycode = NSEvent::keyCode(ns_event);

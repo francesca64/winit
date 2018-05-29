@@ -22,7 +22,7 @@ use platform::platform::window::{get_window_id, IdRef};
 struct ViewState {
     window: id,
     shared: Weak<Shared>,
-    ime_spot: Option<(i32, i32)>,
+    ime_spot: Option<(f64, f64)>,
     raw_characters: Option<String>,
     last_insert: Option<String>,
 }
@@ -43,7 +43,7 @@ pub fn new_view(window: id, shared: Weak<Shared>) -> IdRef {
     }
 }
 
-pub fn set_ime_spot(view: id, input_context: id, x: i32, y: i32) {
+pub fn set_ime_spot(view: id, input_context: id, x: f64, y: f64) {
     unsafe {
         let state_ptr: *mut c_void = *(*view).get_mut_ivar("winitState");
         let state = &mut *(state_ptr as *mut ViewState);
@@ -51,8 +51,8 @@ pub fn set_ime_spot(view: id, input_context: id, x: i32, y: i32) {
             state.window,
             NSWindow::frame(state.window),
         );
-        let base_x = content_rect.origin.x as i32;
-        let base_y = (content_rect.origin.y + content_rect.size.height) as i32;
+        let base_x = content_rect.origin.x as f64;
+        let base_y = (content_rect.origin.y + content_rect.size.height) as f64;
         state.ime_spot = Some((base_x + x, base_y - y));
         let _: () = msg_send![input_context, invalidateCharacterCoordinates];
     }
@@ -239,7 +239,7 @@ extern fn first_rect_for_character_range(
             );
             let x = content_rect.origin.x;
             let y = util::bottom_left_to_top_left(content_rect);
-            (x as i32, y as i32)
+            (x, y)
         });
 
         NSRect::new(
