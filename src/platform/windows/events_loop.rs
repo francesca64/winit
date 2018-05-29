@@ -1085,16 +1085,17 @@ pub unsafe extern "system" fn callback(
                     .and_then(|cstash| cstash.windows.get(&window))
                     .map(|window_state_mutex| {
                         let mut window_state = window_state_mutex.lock().unwrap();
-                        let pre_fullscreen_dpi = window_state.saved_window_info
+                        let suppress_resize = window_state.saved_window_info
                             .as_mut()
-                            .and_then(|saved_window_info| {
-                                if !saved_window_info.is_fullscreen {
-                                    saved_window_info.dpi_factor.take()
+                            .map(|saved_window_info| {
+                                let dpi_changed = if !saved_window_info.is_fullscreen {
+                                    saved_window_info.dpi_factor.take() != Some(new_dpi_factor)
                                 } else {
-                                    None
-                                }
-                            });
-                        let suppress_resize = pre_fullscreen_dpi == Some(new_dpi_factor);
+                                    false
+                                };
+                                !dpi_changed || saved_window_info.is_fullscreen
+                            })
+                            .unwrap_or(false);
                         // Now we adjust the min/max dimensions for the new DPI.
                         if !suppress_resize {
                             let old_dpi_factor = window_state.dpi_factor;
