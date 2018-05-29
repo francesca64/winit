@@ -7,7 +7,7 @@ use std::sync::Arc;
 use libc;
 use parking_lot::Mutex;
 
-use {CursorState, Icon, LogicalCoordinates, LogicalDimensions, MouseCursor, WindowAttributes};
+use {CursorState, Icon, LogicalPosition, LogicalSize, MouseCursor, WindowAttributes};
 use CreationError::{self, OsError};
 use platform::MonitorId as PlatformMonitorId;
 use platform::PlatformSpecificWindowBuilderAttributes;
@@ -348,14 +348,14 @@ impl UnownedWindow {
             ))
     }
 
-    fn logicalize_coords(&self, (x, y): (i32, i32)) -> LogicalCoordinates {
+    fn logicalize_coords(&self, (x, y): (i32, i32)) -> LogicalPosition {
         let dpi = self.get_hidpi_factor();
-        LogicalCoordinates::from_physical((x, y), dpi)
+        LogicalPosition::from_physical((x, y), dpi)
     }
 
-    fn logicalize_size(&self, (width, height): (u32, u32)) -> LogicalDimensions {
+    fn logicalize_size(&self, (width, height): (u32, u32)) -> LogicalSize {
         let dpi = self.get_hidpi_factor();
-        LogicalDimensions::from_physical((width, height), dpi)
+        LogicalSize::from_physical((width, height), dpi)
     }
 
     fn set_pid(&self) -> Option<util::Flusher> {
@@ -641,7 +641,7 @@ impl UnownedWindow {
     }
 
     #[inline]
-    pub fn get_position(&self) -> Option<LogicalCoordinates> {
+    pub fn get_position(&self) -> Option<LogicalPosition> {
         let extents = (*self.shared_state.lock()).frame_extents.clone();
         if let Some(extents) = extents {
             self.get_inner_position()
@@ -659,7 +659,7 @@ impl UnownedWindow {
     }
 
     #[inline]
-    pub fn get_inner_position(&self) -> Option<LogicalCoordinates> {
+    pub fn get_inner_position(&self) -> Option<LogicalPosition> {
         self.get_inner_position_physical()
             .map(|coords| self.logicalize_coords(coords))
     }
@@ -695,7 +695,7 @@ impl UnownedWindow {
     }
 
     #[inline]
-    pub fn set_position(&self, logical_position: LogicalCoordinates) {
+    pub fn set_position(&self, logical_position: LogicalPosition) {
         let (x, y) = logical_position.to_physical(self.get_hidpi_factor()).into();
         self.set_position_physical(x, y);
     }
@@ -707,7 +707,7 @@ impl UnownedWindow {
     }
 
     #[inline]
-    pub fn get_inner_size(&self) -> Option<LogicalDimensions> {
+    pub fn get_inner_size(&self) -> Option<LogicalSize> {
         self.get_inner_size_physical()
             .map(|size| self.logicalize_size(size))
     }
@@ -724,7 +724,7 @@ impl UnownedWindow {
     }
 
     #[inline]
-    pub fn get_outer_size(&self) -> Option<LogicalDimensions> {
+    pub fn get_outer_size(&self) -> Option<LogicalSize> {
         let extents = (*self.shared_state.lock()).frame_extents.clone();
         if let Some(extents) = extents {
             self.get_inner_size()
@@ -748,7 +748,7 @@ impl UnownedWindow {
     }
 
     #[inline]
-    pub fn set_inner_size(&self, logical_size: LogicalDimensions) {
+    pub fn set_inner_size(&self, logical_size: LogicalSize) {
         let dpi_factor = self.get_hidpi_factor();
         let (width, height) = logical_size.to_physical(dpi_factor).into();
         self.set_inner_size_physical(width, height);
@@ -768,7 +768,7 @@ impl UnownedWindow {
     }
 
     #[inline]
-    pub fn set_min_dimensions(&self, logical_dimensions: Option<LogicalDimensions>) {
+    pub fn set_min_dimensions(&self, logical_dimensions: Option<LogicalSize>) {
         let physical_dimensions = logical_dimensions.map(|logical_dimensions| {
             logical_dimensions.to_physical(self.get_hidpi_factor()).into()
         });
@@ -781,7 +781,7 @@ impl UnownedWindow {
     }
 
     #[inline]
-    pub fn set_max_dimensions(&self, logical_dimensions: Option<LogicalDimensions>) {
+    pub fn set_max_dimensions(&self, logical_dimensions: Option<LogicalSize>) {
         let physical_dimensions = logical_dimensions.map(|logical_dimensions| {
             logical_dimensions.to_physical(self.get_hidpi_factor()).into()
         });
@@ -1075,7 +1075,7 @@ impl UnownedWindow {
     }
 
     #[inline]
-    pub fn set_cursor_position(&self, logical_position: LogicalCoordinates) -> Result<(), ()> {
+    pub fn set_cursor_position(&self, logical_position: LogicalPosition) -> Result<(), ()> {
         let (x, y) = logical_position.to_physical(self.get_hidpi_factor()).into();
         self.set_cursor_position_physical(x, y)
     }
@@ -1087,7 +1087,7 @@ impl UnownedWindow {
     }
 
     #[inline]
-    pub fn set_ime_spot(&self, logical_spot: LogicalCoordinates) {
+    pub fn set_ime_spot(&self, logical_spot: LogicalPosition) {
         let (x, y) = logical_spot.to_physical(self.get_hidpi_factor()).into();
         self.set_ime_spot_physical(x, y);
     }
