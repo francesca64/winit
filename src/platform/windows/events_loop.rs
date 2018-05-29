@@ -47,7 +47,6 @@ use {
     LogicalPosition,
     LogicalSize,
     PhysicalSize,
-    WindowAttributes,
     WindowEvent,
     WindowId as SuperWindowId,
 };
@@ -87,7 +86,8 @@ pub struct WindowState {
     /// Cursor state to set at the next `WM_SETCURSOR` event received.
     pub cursor_state: CursorState,
     /// Used by `WM_GETMINMAXINFO`.
-    pub attributes: WindowAttributes,
+    pub max_size: Option<PhysicalSize>,
+    pub min_size: Option<PhysicalSize>,
     /// Will contain `true` if the mouse is hovering the window.
     pub mouse_in_window: bool,
     /// Saved window info for fullscreen restored
@@ -95,6 +95,19 @@ pub struct WindowState {
     // This is different from the value in `SavedWindowInfo`! That one represents the DPI saved upon entering
     // fullscreen. This will always be the most recent DPI for the window.
     pub dpi_factor: f64,
+}
+
+impl WindowState {
+    pub fn update_min_max(&mut self, old_dpi_factor: f64, new_dpi_factor: f64) {
+        let scale_factor = new_dpi_factor / old_dpi_factor;
+        let dpi_adjuster = |mut physical_size: PhysicalSize| -> PhysicalSize {
+            physical_size.width *= scale_factor;
+            physical_size.height *= scale_factor;
+            physical_size
+        };
+        self.max_size = self.max_size.map(&dpi_adjuster);
+        self.min_size = self.min_size.map(&dpi_adjuster);
+    }
 }
 
 /// Dummy object that allows inserting a window's state.
@@ -1034,18 +1047,15 @@ pub unsafe extern "system" fn callback(
                     if let Some(wstash) = cstash.windows.get(&window) {
                         let window_state = wstash.lock().unwrap();
 
-                        if window_state.attributes.min_dimensions.is_some() ||
-                           window_state.attributes.max_dimensions.is_some() {
-
+                        if window_state.min_size.is_some() || window_state.max_size.is_some() {
                             let style = winuser::GetWindowLongA(window, winuser::GWL_STYLE) as DWORD;
                             let ex_style = winuser::GetWindowLongA(window, winuser::GWL_EXSTYLE) as DWORD;
-
-                            if let Some(min_dimensions) = window_state.attributes.min_dimensions {
-                                let (width, height) = adjust_size(min_dimensions, style, ex_style);
+                            if let Some(min_size) = window_state.min_size {
+                                let (width, height) = adjust_size(min_size, style, ex_style);
                                 (*mmi).ptMinTrackSize = POINT { x: width as i32, y: height as i32 };
                             }
-                            if let Some(max_dimensions) = window_state.attributes.max_dimensions {
-                                let (width, height) = adjust_size(max_dimensions, style, ex_style);
+                            if let Some(max_size) = window_state.max_size {
+                                let (width, height) = adjust_size(max_size, style, ex_style);
                                 (*mmi).ptMaxTrackSize = POINT { x: width as i32, y: height as i32 };
                             }
                         }
@@ -1085,10 +1095,10 @@ pub unsafe extern "system" fn callback(
                                 }
                             });
                         let suppress_resize = pre_fullscreen_dpi == Some(new_dpi_factor);
+                        // Now we adjust the min/max dimensions for the new DPI.
                         if !suppress_resize {
-                            // Now we adjust the min/max dimensions for the new DPI.
                             let old_dpi_factor = window_state.dpi_factor;
-                            window_state.attributes.adjust_for_dpi(old_dpi_factor, new_dpi_factor);
+                            window_state.update_min_max(old_dpi_factor, new_dpi_factor);
                         }
                         window_state.dpi_factor = new_dpi_factor;
                         suppress_resize
