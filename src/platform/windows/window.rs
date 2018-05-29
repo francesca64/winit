@@ -27,7 +27,7 @@ use {
 };
 
 use platform::platform::{Cursor, EventsLoop, PlatformSpecificWindowBuilderAttributes, WindowId};
-use platform::platform::dpi::{BASE_DPI, get_window_dpi, get_window_scale_factor};
+use platform::platform::dpi::{BASE_DPI, dpi_to_scale_factor, get_window_dpi, get_window_scale_factor};
 use platform::platform::events_loop::{self, DESTROY_MSG_ID, INITIAL_DPI_MSG_ID};
 use platform::platform::icon::{self, IconType, WinIcon};
 use platform::platform::raw_input::register_all_mice_and_keyboards_for_raw_input;
@@ -71,6 +71,19 @@ unsafe fn unjust_window_rect(prc: &mut RECT, style: DWORD, ex_style: DWORD) -> B
         prc.bottom -= rc.bottom;
     }
     status
+}
+
+impl WindowAttributes {
+    pub(crate) fn adjust_for_dpi(&mut self, old_dpi_factor: f64, new_dpi_factor: f64) {
+        let scale_factor = new_dpi_factor / old_dpi_factor;
+        let dpi_adjuster = |(width, height): (u32, u32)| -> (u32, u32) {
+            let new_width = width as f64 * scale_factor;
+            let new_height = height as f64 * scale_factor;
+            (new_width.round() as u32, new_height.round() as u32)
+        };
+        self.max_dimensions = self.max_dimensions.map(&dpi_adjuster);
+        self.min_dimensions = self.min_dimensions.map(&dpi_adjuster);
+    }
 }
 
 impl Window {
@@ -206,7 +219,6 @@ impl Window {
 
     pub(crate) fn set_inner_size_physical(&self, x: u32, y: u32) {
         unsafe {
-            // Calculate the outer size based upon the specified inner size
             let mut rect = RECT {
                 top: 0,
                 left: 0,
@@ -246,36 +258,8 @@ impl Window {
         let mut window_state = self.window_state.lock().unwrap();
         window_state.attributes.min_dimensions = dimensions;
         // Make windows re-check the window size bounds.
-        if let Some(inner_size) = self.get_inner_size() {
-            let dpi_factor = self.get_hidpi_factor();
-            let inner_size: (u32, u32) = inner_size.to_physical(dpi_factor).into();
-            unsafe {
-                let mut rect = RECT {
-                    top: 0,
-                    left: 0,
-                    bottom: inner_size.1 as LONG,
-                    right: inner_size.0 as LONG,
-                };
-                let dw_style = winuser::GetWindowLongA(self.window.0, winuser::GWL_STYLE) as DWORD;
-                let b_menu = !winuser::GetMenu(self.window.0).is_null() as BOOL;
-                let dw_style_ex = winuser::GetWindowLongA(self.window.0, winuser::GWL_EXSTYLE) as DWORD;
-                winuser::AdjustWindowRectEx(&mut rect, dw_style, b_menu, dw_style_ex);
-                let outer_x = (rect.right - rect.left).abs() as raw::c_int;
-                let outer_y = (rect.top - rect.bottom).abs() as raw::c_int;
-                winuser::SetWindowPos(
-                    self.window.0,
-                    ptr::null_mut(),
-                    0,
-                    0,
-                    outer_x,
-                    outer_y,
-                    winuser::SWP_ASYNCWINDOWPOS
-                    | winuser::SWP_NOZORDER
-                    | winuser::SWP_NOREPOSITION
-                    | winuser::SWP_NOMOVE,
-                );
-            }
-        }
+        self.get_inner_size_physical()
+            .map(|(width, height)| self.set_inner_size_physical(width, height));
     }
 
     #[inline]
@@ -291,36 +275,8 @@ impl Window {
         let mut window_state = self.window_state.lock().unwrap();
         window_state.attributes.max_dimensions = dimensions;
         // Make windows re-check the window size bounds.
-        if let Some(inner_size) = self.get_inner_size() {
-            let dpi_factor = self.get_hidpi_factor();
-            let inner_size: (u32, u32) = inner_size.to_physical(dpi_factor).into();
-            unsafe {
-                let mut rect = RECT {
-                    top: 0,
-                    left: 0,
-                    bottom: inner_size.1 as LONG,
-                    right: inner_size.0 as LONG,
-                };
-                let dw_style = winuser::GetWindowLongA(self.window.0, winuser::GWL_STYLE) as DWORD;
-                let b_menu = !winuser::GetMenu(self.window.0).is_null() as BOOL;
-                let dw_style_ex = winuser::GetWindowLongA(self.window.0, winuser::GWL_EXSTYLE) as DWORD;
-                winuser::AdjustWindowRectEx(&mut rect, dw_style, b_menu, dw_style_ex);
-                let outer_x = (rect.right - rect.left).abs() as raw::c_int;
-                let outer_y = (rect.top - rect.bottom).abs() as raw::c_int;
-                winuser::SetWindowPos(
-                    self.window.0,
-                    ptr::null_mut(),
-                    0,
-                    0,
-                    outer_x,
-                    outer_y,
-                    winuser::SWP_ASYNCWINDOWPOS
-                    | winuser::SWP_NOZORDER
-                    | winuser::SWP_NOREPOSITION
-                    | winuser::SWP_NOMOVE,
-                );
-            }
-        }
+        self.get_inner_size_physical()
+            .map(|(width, height)| self.set_inner_size_physical(width, height));
     }
 
     #[inline]
@@ -982,6 +938,7 @@ unsafe fn init(
     );
 
     let dpi = get_window_dpi(real_window.0, real_window.1);
+    let dpi_factor = dpi_to_scale_factor(dpi);
     if dpi != BASE_DPI {
         let width = dimensions.0 as WORD;
         let height = dimensions.1 as WORD;
@@ -998,6 +955,9 @@ unsafe fn init(
         );
     }
 
+    // Adjust min/max dimensions for DPI.
+    window.adjust_for_dpi(1.0, dpi_factor);
+
     // Creating a mutex to track the current window state
     let window_state = Arc::new(Mutex::new(events_loop::WindowState {
         cursor: Cursor(winuser::IDC_ARROW), // use arrow by default
@@ -1005,6 +965,7 @@ unsafe fn init(
         attributes: window,
         mouse_in_window: false,
         saved_window_info: None,
+        dpi_factor,
     }));
 
     // making the window transparent

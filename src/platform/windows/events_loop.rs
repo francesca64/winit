@@ -92,6 +92,9 @@ pub struct WindowState {
     pub mouse_in_window: bool,
     /// Saved window info for fullscreen restored
     pub saved_window_info: Option<SavedWindowInfo>,
+    // This is different from the value in `SavedWindowInfo`! That one represents the DPI saved upon entering
+    // fullscreen. This will always be the most recent DPI for the window.
+    pub dpi_factor: f64,
 }
 
 /// Dummy object that allows inserting a window's state.
@@ -1062,8 +1065,8 @@ pub unsafe extern "system" fn callback(
             // "you only need to use either the X-axis or the Y-axis value when scaling your
             // application since they are the same".
             // https://msdn.microsoft.com/en-us/library/windows/desktop/dn312083(v=vs.85).aspx
-            let dpi_x = u32::from(LOWORD(wparam as DWORD));
-            let dpi_factor = dpi_to_scale_factor(dpi_x);
+            let new_dpi_x = u32::from(LOWORD(wparam as DWORD));
+            let new_dpi_factor = dpi_to_scale_factor(new_dpi_x);
 
             let suppress_resize = CONTEXT_STASH.with(|context_stash| {
                 context_stash
@@ -1081,7 +1084,14 @@ pub unsafe extern "system" fn callback(
                                     None
                                 }
                             });
-                            pre_fullscreen_dpi == Some(dpi_factor)
+                        let suppress_resize = pre_fullscreen_dpi == Some(new_dpi_factor);
+                        if !suppress_resize {
+                            // Now we adjust the min/max dimensions for the new DPI.
+                            let old_dpi_factor = window_state.dpi_factor;
+                            window_state.attributes.adjust_for_dpi(old_dpi_factor, new_dpi_factor);
+                        }
+                        window_state.dpi_factor = new_dpi_factor;
+                        suppress_resize
                     })
                     .unwrap_or(false)
             });
@@ -1104,7 +1114,7 @@ pub unsafe extern "system" fn callback(
 
             send_event(Event::WindowEvent {
                 window_id: SuperWindowId(WindowId(window)),
-                event: HiDpiFactorChanged(dpi_factor),
+                event: HiDpiFactorChanged(new_dpi_factor),
             });
 
             0
