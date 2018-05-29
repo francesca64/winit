@@ -1,7 +1,5 @@
 use std::collections::vec_deque::IntoIter as VecDequeIter;
 
-use libc;
-
 use {
     CreationError,
     CursorState,
@@ -143,6 +141,7 @@ impl WindowBuilder {
     ///
     /// Error should be very rare and only occur in case of permission denied, incompatible system,
     /// out of memory, etc.
+    #[inline]
     pub fn build(mut self, events_loop: &EventsLoop) -> Result<Window, CreationError> {
         self.window.dimensions = Some(self.window.dimensions.unwrap_or_else(|| {
             if let Some(ref monitor) = self.window.fullscreen {
@@ -289,26 +288,9 @@ impl Window {
         self.window.set_max_dimensions(dimensions)
     }
 
-    /// DEPRECATED. Gets the native platform specific display for this window.
-    /// This is typically only required when integrating with
-    /// other libraries that need this information.
-    #[deprecated]
-    #[inline]
-    pub unsafe fn platform_display(&self) -> *mut libc::c_void {
-        self.window.platform_display()
-    }
-
-    /// DEPRECATED. Gets the native platform specific window handle. This is
-    /// typically only required when integrating with other libraries
-    /// that need this information.
-    #[deprecated]
-    #[inline]
-    pub unsafe fn platform_window(&self) -> *mut libc::c_void {
-        self.window.platform_window()
-    }
-
     /// Modifies the mouse cursor of the window.
     /// Has no effect on Android.
+    #[inline]
     pub fn set_cursor(&self, cursor: MouseCursor) {
         self.window.set_cursor(cursor);
     }
@@ -379,6 +361,7 @@ impl Window {
     }
 
     /// Returns the monitor on which the window currently resides
+    #[inline]
     pub fn get_current_monitor(&self) -> MonitorId {
         self.window.get_current_monitor()
     }
@@ -440,7 +423,7 @@ impl MonitorId {
 
     /// Returns the ratio between the monitor's physical pixels and logical pixels.
     #[inline]
-    pub fn get_hidpi_factor(&self) -> f32 {
+    pub fn get_hidpi_factor(&self) -> f64 {
         self.inner.get_hidpi_factor()
     }
 }

@@ -153,8 +153,8 @@ pub unsafe fn get_monitor_dpi(hmonitor: HMONITOR) -> Option<u32> {
 }
 
 pub const BASE_DPI: u32 = 96;
-pub fn dpi_to_scale_factor(dpi: u32) -> f32 {
-    dpi as f32 / BASE_DPI as f32
+pub fn dpi_to_scale_factor(dpi: u32) -> f64 {
+    dpi as f64 / BASE_DPI as f64
 }
 
 pub unsafe fn get_window_dpi(hwnd: HWND, hdc: HDC) -> u32 {
@@ -193,6 +193,19 @@ pub unsafe fn get_window_dpi(hwnd: HWND, hdc: HDC) -> u32 {
     }
 }
 
-pub unsafe fn get_window_scale_factor(hwnd: HWND, hdc: HDC) -> f32 {
-    dpi_to_scale_factor(get_window_dpi(hwnd, hdc))
+// Use this when you have both the HWND and HDC on hand (i.e. window methods)
+pub fn get_window_scale_factor(hwnd: HWND, hdc: HDC) -> f64 {
+    assert!(!hwnd.is_null());
+    assert!(!hdc.is_null());
+    unsafe { dpi_to_scale_factor(get_window_dpi(hwnd, hdc)) }
+}
+
+// Use this when you only have the HWND (i.e. event handling)
+pub fn get_hwnd_scale_factor(hwnd: HWND) -> f64 {
+    assert!(!hwnd.is_null());
+    let hdc = unsafe { winuser::GetDC(hwnd) };
+    if hdc.is_null() {
+        panic!("[winit] `GetDC` returned null!");
+    }
+    unsafe { get_window_scale_factor(hwnd, hdc) }
 }

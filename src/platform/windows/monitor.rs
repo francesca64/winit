@@ -33,7 +33,7 @@ pub struct MonitorId {
     dimensions: (u32, u32),
 
     /// DPI scale factor.
-    hidpi_factor: f32,
+    hidpi_factor: f64,
 }
 
 // Send is not implemented for HMONITOR, we have to wrap it and implement it manually.
@@ -80,7 +80,6 @@ impl EventsLoop {
         unsafe {
             // We need to enable DPI awareness to get correct resolution and DPI values.
             become_dpi_aware(self.dpi_aware);
-
             let mut monitors: VecDeque<MonitorId> = VecDeque::new();
             winuser::EnumDisplayMonitors(
                 ptr::null_mut(),
@@ -111,6 +110,8 @@ impl EventsLoop {
                 (place.bottom - place.top) as u32,
             );
 
+            let hidpi_factor = dpi_to_scale_factor(get_monitor_dpi(hmonitor).unwrap_or(96));
+
             MonitorId {
                 adapter_name: monitor_info.szDevice,
                 hmonitor: super::monitor::HMonitor(hmonitor),
@@ -118,7 +119,7 @@ impl EventsLoop {
                 primary: monitor_info.dwFlags & winuser::MONITORINFOF_PRIMARY != 0,
                 position,
                 dimensions,
-                hidpi_factor: 1.0,
+                hidpi_factor,
             }
         }
     }
@@ -173,7 +174,7 @@ impl MonitorId {
     }
 
     #[inline]
-    pub fn get_hidpi_factor(&self) -> f32 {
+    pub fn get_hidpi_factor(&self) -> f64 {
         self.hidpi_factor
     }
 }

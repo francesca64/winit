@@ -20,38 +20,43 @@ use std::os::windows::ffi::OsStringExt;
 use std::os::windows::io::AsRawHandle;
 use std::sync::{Arc, Barrier, Condvar, mpsc, Mutex};
 
+use winapi::ctypes::c_int;
 use winapi::shared::minwindef::{
-    LOWORD,
-    HIWORD,
+    BOOL,
     DWORD,
-    WPARAM,
-    LPARAM,
+    HIWORD,
     INT,
-    UINT,
+    LOWORD,
+    LPARAM,
     LRESULT,
     MAX_PATH,
+    UINT,
+    WPARAM,
 };
 use winapi::shared::windef::{HWND, POINT, RECT};
 use winapi::shared::windowsx;
 use winapi::um::{winuser, shellapi, processthreadsapi};
 use winapi::um::winnt::{LONG, LPCSTR, SHORT};
 
-use events::DeviceEvent;
+use {
+    ControlFlow,
+    CursorState,
+    Event,
+    EventsLoopClosed,
+    KeyboardInput,
+    LogicalCoordinates,
+    LogicalDimensions,
+    PhysicalDimensions,
+    WindowAttributes,
+    WindowEvent,
+    WindowId as SuperWindowId,
+};
+use events::{DeviceEvent, Touch, TouchPhase};
 use platform::platform::{event, Cursor, WindowId, DEVICE_ID, wrap_device_id, util};
-use platform::platform::dpi::{dpi_to_scale_factor, enable_non_client_dpi_scaling};
+use platform::platform::dpi::{dpi_to_scale_factor, enable_non_client_dpi_scaling, get_hwnd_scale_factor};
 use platform::platform::event::{handle_extended_keys, process_key_params, vkey_to_winit_vkey};
 use platform::platform::raw_input::{get_raw_input_data, get_raw_mouse_button_state};
 use platform::platform::window::adjust_size;
-
-use ControlFlow;
-use CursorState;
-use Event;
-use EventsLoopClosed;
-use KeyboardInput;
-use WindowAttributes;
-use WindowEvent;
-use WindowId as SuperWindowId;
-use events::{Touch, TouchPhase};
 
 /// Contains saved window info for switching between fullscreen
 #[derive(Clone)]
@@ -452,9 +457,14 @@ pub unsafe extern "system" fn callback(
 
             let windowpos = lparam as *const winuser::WINDOWPOS;
             if (*windowpos).flags & winuser::SWP_NOMOVE != winuser::SWP_NOMOVE {
+                let dpi_factor = get_hwnd_scale_factor(window);
+                let logical_position = LogicalCoordinates::from_physical(
+                    ((*windowpos).x, (*windowpos).y),
+                    dpi_factor,
+                );
                 send_event(Event::WindowEvent {
                     window_id: SuperWindowId(WindowId(window)),
-                    event: Moved((*windowpos).x, (*windowpos).y),
+                    event: Moved(logical_position),
                 });
             }
 
@@ -473,9 +483,11 @@ pub unsafe extern "system" fn callback(
                 let mut context_stash = context_stash.borrow_mut();
                 let cstash = context_stash.as_mut().unwrap();
 
+                let dpi_factor = get_hwnd_scale_factor(window);
+                let logical_size = LogicalDimensions::from_physical((w, h), dpi_factor);
                 let event = Event::WindowEvent {
                     window_id: SuperWindowId(WindowId(window)),
-                    event: Resized(w, h),
+                    event: Resized(logical_size),
                 };
 
                 // If this window has been inserted into the window map, the resize event happened
@@ -1035,7 +1047,7 @@ pub unsafe extern "system" fn callback(
         // Only sent on Windows 8.1 or newer. On Windows 7 and older user has to log out to change
         // DPI, therefore all applications are closed while DPI is changing.
         winuser::WM_DPICHANGED => {
-            use events::WindowEvent::HiDPIFactorChanged;
+            use events::WindowEvent::HiDpiFactorChanged;
 
             // This message actually provides two DPI values - x and y. However MSDN says that
             // "you only need to use either the X-axis or the Y-axis value when scaling your
@@ -1057,7 +1069,7 @@ pub unsafe extern "system" fn callback(
 
             send_event(Event::WindowEvent {
                 window_id: SuperWindowId(WindowId(window)),
-                event: HiDPIFactorChanged(dpi_to_scale_factor(dpi_x)),
+                event: HiDpiFactorChanged(dpi_to_scale_factor(dpi_x)),
             });
 
             0
@@ -1068,18 +1080,45 @@ pub unsafe extern "system" fn callback(
                 winuser::DestroyWindow(window);
                 0
             } else if msg == *INITIAL_DPI_MSG_ID {
-                use events::WindowEvent::{HiDPIFactorChanged, Resized};
+                use events::WindowEvent::HiDpiFactorChanged;
                 let scale_factor = dpi_to_scale_factor(wparam as u32);
+                send_event(Event::WindowEvent {
+                    window_id: SuperWindowId(WindowId(window)),
+                    event: HiDpiFactorChanged(scale_factor),
+                });
+                // Automatically resize for actual DPI
                 let width = LOWORD(lparam as DWORD) as u32;
                 let height = HIWORD(lparam as DWORD) as u32;
-                send_event(Event::WindowEvent {
-                    window_id: SuperWindowId(WindowId(window)),
-                    event: HiDPIFactorChanged(scale_factor),
-                });
-                send_event(Event::WindowEvent {
-                    window_id: SuperWindowId(WindowId(window)),
-                    event: Resized(width, height),
-                });
+                let (adjusted_width, adjusted_height): (u32, u32) = PhysicalDimensions::from_logical(
+                    (width, height),
+                    scale_factor,
+                ).into();
+                // We're not done yet! `SetWindowPos` needs the window size, not the client area size.
+                let mut rect = RECT {
+                    top: 0,
+                    left: 0,
+                    bottom: adjusted_height as LONG,
+                    right: adjusted_width as LONG,
+                };
+                let dw_style = winuser::GetWindowLongA(window, winuser::GWL_STYLE) as DWORD;
+                let b_menu = !winuser::GetMenu(window).is_null() as BOOL;
+                let dw_style_ex = winuser::GetWindowLongA(window, winuser::GWL_EXSTYLE) as DWORD;
+                winuser::AdjustWindowRectEx(&mut rect, dw_style, b_menu, dw_style_ex);
+                let outer_x = (rect.right - rect.left).abs() as c_int;
+                let outer_y = (rect.top - rect.bottom).abs() as c_int;
+                winuser::SetWindowPos(
+                    window,
+                    ptr::null_mut(),
+                    0,
+                    0,
+                    outer_x,
+                    outer_y,
+                    winuser::SWP_NOMOVE
+                    | winuser::SWP_NOREPOSITION
+                    | winuser::SWP_NOZORDER
+                    | winuser::SWP_NOACTIVATE,
+                );
+                // TODO: Adjust min+max size
                 0
             } else {
                 winuser::DefWindowProcW(window, msg, wparam, lparam)

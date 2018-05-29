@@ -840,18 +840,8 @@ impl UnownedWindow {
     }
 
     #[inline]
-    pub fn platform_display(&self) -> *mut libc::c_void {
-        self.xconn.display as _
-    }
-
-    #[inline]
     pub fn get_xlib_window(&self) -> c_ulong {
         self.xwindow
-    }
-
-    #[inline]
-    pub fn platform_window(&self) -> *mut libc::c_void {
-        self.xwindow as _
     }
 
     #[inline]
