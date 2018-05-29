@@ -72,6 +72,11 @@ pub struct SavedWindowInfo {
     pub ex_style: LONG,
     /// Window position and size
     pub rect: RECT,
+    // Since a window can be fullscreened to a different monitor, a DPI change can be triggered. This could result in
+    // the window being automitcally resized to smaller/larger than it was supposed to be restored to, so we thus must
+    // check if the post-fullscreen DPI matches the pre-fullscreen DPI.
+    pub is_fullscreen: bool,
+    pub dpi_factor: Option<f64>,
 }
 
 /// Contains information about states and the window that the callback is going to use.
@@ -1058,22 +1063,48 @@ pub unsafe extern "system" fn callback(
             // application since they are the same".
             // https://msdn.microsoft.com/en-us/library/windows/desktop/dn312083(v=vs.85).aspx
             let dpi_x = u32::from(LOWORD(wparam as DWORD));
+            let dpi_factor = dpi_to_scale_factor(dpi_x);
 
-            // Resize window to the size suggested by Windows.
-            let rect = &*(lparam as *const RECT);
-            winuser::SetWindowPos(
-                window,
-                ptr::null_mut(),
-                rect.left,
-                rect.top,
-                rect.right - rect.left,
-                rect.bottom - rect.top,
-                winuser::SWP_NOZORDER | winuser::SWP_NOACTIVATE,
-            );
+            let suppress_resize = CONTEXT_STASH.with(|context_stash| {
+                context_stash
+                    .borrow()
+                    .as_ref()
+                    .and_then(|cstash| cstash.windows.get(&window))
+                    .map(|window_state_mutex| {
+                        let mut window_state = window_state_mutex.lock().unwrap();
+                        let pre_fullscreen_dpi = window_state.saved_window_info
+                            .as_mut()
+                            .and_then(|saved_window_info| {
+                                if !saved_window_info.is_fullscreen {
+                                    saved_window_info.dpi_factor.take()
+                                } else {
+                                    None
+                                }
+                            });
+                            pre_fullscreen_dpi == Some(dpi_factor)
+                    })
+                    .unwrap_or(false)
+            });
+
+            // This prevents us from re-applying DPI adjustment to the restored size after exiting
+            // fullscreen (the restored size is already DPI adjusted).
+            if !suppress_resize {
+                // Resize window to the size suggested by Windows.
+                let rect = &*(lparam as *const RECT);
+                winuser::SetWindowPos(
+                    window,
+                    ptr::null_mut(),
+                    rect.left,
+                    rect.top,
+                    rect.right - rect.left,
+                    rect.bottom - rect.top,
+                    winuser::SWP_NOZORDER | winuser::SWP_NOACTIVATE,
+                );
+            }
 
             send_event(Event::WindowEvent {
                 window_id: SuperWindowId(WindowId(window)),
-                event: HiDpiFactorChanged(dpi_to_scale_factor(dpi_x)),
+                event: HiDpiFactorChanged(dpi_factor),
             });
 
             0

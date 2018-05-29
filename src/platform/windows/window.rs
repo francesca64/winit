@@ -525,10 +525,13 @@ impl Window {
 
         if window_state.attributes.fullscreen.is_none() || window_state.saved_window_info.is_none() {
             let rect = util::get_window_rect(self.window.0).expect("`GetWindowRect` failed");
+            let dpi_factor = Some(self.get_hidpi_factor());
             window_state.saved_window_info = Some(events_loop::SavedWindowInfo {
                 style: winuser::GetWindowLongW(self.window.0, winuser::GWL_STYLE),
                 ex_style: winuser::GetWindowLongW(self.window.0, winuser::GWL_EXSTYLE),
                 rect,
+                is_fullscreen: true,
+                dpi_factor,
             });
         }
 
@@ -544,7 +547,7 @@ impl Window {
     }
 
     unsafe fn restore_saved_window(&self) {
-        let window_state = self.window_state.lock().unwrap();
+        let mut window_state = self.window_state.lock().unwrap();
 
         // 'saved_window_info' can be None if the window has never been
         // in fullscreen mode before this method gets called.
@@ -555,6 +558,10 @@ impl Window {
         // Reset original window style and size.  The multiple window size/moves
         // here are ugly, but if SetWindowPos() doesn't redraw, the taskbar won't be
         // repainted.  Better-looking methods welcome.
+        {
+            let saved_window_info = window_state.saved_window_info.as_mut().unwrap();
+            saved_window_info.is_fullscreen = false;
+        }
         let saved_window_info = window_state.saved_window_info.as_ref().unwrap();
 
         let rect = saved_window_info.rect.clone();
