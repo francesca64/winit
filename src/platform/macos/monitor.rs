@@ -76,13 +76,19 @@ impl MonitorId {
         let display = CGDisplay::new(display_id);
         let height = display.pixels_high();
         let width = display.pixels_wide();
-        (width as f64, height as f64).into()
+        PhysicalSize::from_logical(
+            (width as f64, height as f64),
+            self.get_hidpi_factor(),
+        )
     }
 
     #[inline]
     pub fn get_position(&self) -> PhysicalPosition {
         let bounds = unsafe { CGDisplayBounds(self.get_native_identifier()) };
-        (bounds.origin.x as f64, bounds.origin.y as f64).into()
+        PhysicalPosition::from_logical(
+            (bounds.origin.x as f64, bounds.origin.y as f64),
+            self.get_hidpi_factor(),
+        )
     }
 
     pub fn get_hidpi_factor(&self) -> f64 {

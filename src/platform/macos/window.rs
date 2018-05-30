@@ -5,7 +5,17 @@ use std::sync::Weak;
 use std::cell::{Cell, RefCell};
 
 use cocoa;
-use cocoa::appkit::{self, NSApplication, NSColor, NSScreen, NSView, NSWindow, NSWindowButton, NSWindowStyleMask};
+use cocoa::appkit::{
+    self,
+    CGFloat,
+    NSApplication,
+    NSColor,
+    NSScreen,
+    NSView,
+    NSWindow,
+    NSWindowButton,
+    NSWindowStyleMask,
+};
 use cocoa::base::{id, nil};
 use cocoa::foundation::{NSAutoreleasePool, NSDictionary, NSPoint, NSRect, NSSize, NSString};
 
@@ -36,7 +46,7 @@ use window::MonitorId as RootMonitorId;
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Id(pub usize);
 
-struct DelegateState {
+pub struct DelegateState {
     view: IdRef,
     window: IdRef,
     shared: Weak<Shared>,
@@ -49,8 +59,11 @@ struct DelegateState {
     // see comments of `window_did_fail_to_enter_fullscreen`
     handle_with_fullscreen: bool,
 
-    // During windowDidResize, we use this to only send Moved if the position changed.
+    // During `windowDidResize`, we use this to only send Moved if the position changed.
     previous_position: Option<(f64, f64)>,
+
+    // Used to prevent redundant events.
+    previous_dpi_factor: f64,
 }
 
 impl DelegateState {
@@ -142,46 +155,44 @@ pub struct WindowDelegate {
 }
 
 impl WindowDelegate {
+    // Emits an event via the `EventsLoop`'s callback or stores it in the pending queue.
+    pub fn emit_event(state: &mut DelegateState, window_event: WindowEvent) {
+        let window_id = get_window_id(*state.window);
+        let event = Event::WindowEvent {
+            window_id: WindowId(window_id),
+            event: window_event,
+        };
+        if let Some(shared) = state.shared.upgrade() {
+            shared.call_user_callback_with_event_or_store_in_pending(event);
+        }
+    }
+
+    pub fn emit_resize_event(state: &mut DelegateState) {
+        let rect = unsafe { NSView::frame(*state.view) };
+        let size = LogicalSize::new(rect.size.width as f64, rect.size.height as f64);
+        WindowDelegate::emit_event(state, WindowEvent::Resized(size));
+    }
+
+    pub fn emit_move_event(state: &mut DelegateState) {
+        let rect = unsafe { NSWindow::frame(*state.window) };
+        let x = rect.origin.x as f64;
+        let y = util::bottom_left_to_top_left(rect);
+        let moved = state.previous_position != Some((x, y));
+        if moved {
+            state.previous_position = Some((x, y));
+            WindowDelegate::emit_event(state, WindowEvent::Moved((x, y).into()));
+        }
+    }
+
     /// Get the delegate class, initiailizing it neccessary
     fn class() -> *const Class {
         use std::os::raw::c_void;
-
-        // Emits an event via the `EventsLoop`'s callback or stores it in the pending queue.
-        unsafe fn emit_event(state: &mut DelegateState, window_event: WindowEvent) {
-            let window_id = get_window_id(*state.window);
-            let event = Event::WindowEvent {
-                window_id: WindowId(window_id),
-                event: window_event,
-            };
-
-            if let Some(shared) = state.shared.upgrade() {
-                shared.call_user_callback_with_event_or_store_in_pending(event);
-            }
-        }
-
-        // Called when the window is resized or when the window was moved to a different screen.
-        unsafe fn emit_resize_event(state: &mut DelegateState) {
-            let rect = NSView::frame(*state.view);
-            let size = LogicalSize::new(rect.size.width as f64, rect.size.height as f64);
-            emit_event(state, WindowEvent::Resized(size));
-        }
-
-        unsafe fn emit_move_event(state: &mut DelegateState) {
-            let frame_rect = NSWindow::frame(*state.window);
-            let x = frame_rect.origin.x as f64;
-            let y = util::bottom_left_to_top_left(frame_rect);
-            let moved = state.previous_position != Some((x, y));
-            if moved {
-                state.previous_position = Some((x, y));
-                emit_event(state, WindowEvent::Moved((x, y).into()));
-            }
-        }
 
         extern fn window_should_close(this: &Object, _: Sel, _: id) -> BOOL {
             unsafe {
                 let state: *mut c_void = *this.get_ivar("winitState");
                 let state = &mut *(state as *mut DelegateState);
-                emit_event(state, WindowEvent::CloseRequested);
+                WindowDelegate::emit_event(state, WindowEvent::CloseRequested);
             }
             NO
         }
@@ -191,7 +202,7 @@ impl WindowDelegate {
                 let state: *mut c_void = *this.get_ivar("winitState");
                 let state = &mut *(state as *mut DelegateState);
 
-                emit_event(state, WindowEvent::Destroyed);
+                WindowDelegate::emit_event(state, WindowEvent::Destroyed);
 
                 // Remove the window from the shared state.
                 if let Some(shared) = state.shared.upgrade() {
@@ -205,8 +216,8 @@ impl WindowDelegate {
             unsafe {
                 let state: *mut c_void = *this.get_ivar("winitState");
                 let state = &mut *(state as *mut DelegateState);
-                emit_resize_event(state);
-                emit_move_event(state);
+                WindowDelegate::emit_resize_event(state);
+                WindowDelegate::emit_move_event(state);
             }
         }
 
@@ -215,7 +226,7 @@ impl WindowDelegate {
             unsafe {
                 let state: *mut c_void = *this.get_ivar("winitState");
                 let state = &mut *(state as *mut DelegateState);
-                emit_move_event(state);
+                WindowDelegate::emit_move_event(state);
             }
         }
 
@@ -223,18 +234,26 @@ impl WindowDelegate {
             unsafe {
                 let state: *mut c_void = *this.get_ivar("winitState");
                 let state = &mut *(state as *mut DelegateState);
-                emit_resize_event(state);
-                let scale_factor = NSWindow::backingScaleFactor(*state.window) as f64;
-                emit_event(state, WindowEvent::HiDpiFactorChanged(scale_factor));
+                let dpi_factor = NSWindow::backingScaleFactor(*state.window) as f64;
+                if state.previous_dpi_factor != dpi_factor {
+                    state.previous_dpi_factor = dpi_factor;
+                    WindowDelegate::emit_event(state, WindowEvent::HiDpiFactorChanged(dpi_factor));
+                    WindowDelegate::emit_resize_event(state);
+                }
             }
         }
 
+        // This will always be called before `window_did_change_screen`.
         extern fn window_did_change_backing_properties(this: &Object, _:Sel, _:id) {
             unsafe {
                 let state: *mut c_void = *this.get_ivar("winitState");
                 let state = &mut *(state as *mut DelegateState);
-                let scale_factor = NSWindow::backingScaleFactor(*state.window) as f64;
-                emit_event(state, WindowEvent::HiDpiFactorChanged(scale_factor));
+                let dpi_factor = NSWindow::backingScaleFactor(*state.window) as f64;
+                if state.previous_dpi_factor != dpi_factor {
+                    state.previous_dpi_factor = dpi_factor;
+                    WindowDelegate::emit_event(state, WindowEvent::HiDpiFactorChanged(dpi_factor));
+                    WindowDelegate::emit_resize_event(state);
+                }
             }
         }
 
@@ -244,7 +263,7 @@ impl WindowDelegate {
                 // lost focus
                 let state: *mut c_void = *this.get_ivar("winitState");
                 let state = &mut *(state as *mut DelegateState);
-                emit_event(state, WindowEvent::Focused(true));
+                WindowDelegate::emit_event(state, WindowEvent::Focused(true));
             }
         }
 
@@ -252,7 +271,7 @@ impl WindowDelegate {
             unsafe {
                 let state: *mut c_void = *this.get_ivar("winitState");
                 let state = &mut *(state as *mut DelegateState);
-                emit_event(state, WindowEvent::Focused(false));
+                WindowDelegate::emit_event(state, WindowEvent::Focused(false));
             }
         }
 
@@ -275,7 +294,7 @@ impl WindowDelegate {
 
                     let state: *mut c_void = *this.get_ivar("winitState");
                     let state = &mut *(state as *mut DelegateState);
-                    emit_event(state, WindowEvent::HoveredFile(PathBuf::from(path)));
+                    WindowDelegate::emit_event(state, WindowEvent::HoveredFile(PathBuf::from(path)));
                 }
             };
 
@@ -304,7 +323,7 @@ impl WindowDelegate {
 
                     let state: *mut c_void = *this.get_ivar("winitState");
                     let state = &mut *(state as *mut DelegateState);
-                    emit_event(state, WindowEvent::DroppedFile(PathBuf::from(path)));
+                    WindowDelegate::emit_event(state, WindowEvent::DroppedFile(PathBuf::from(path)));
                 }
             };
 
@@ -319,7 +338,7 @@ impl WindowDelegate {
             unsafe {
                 let state: *mut c_void = *this.get_ivar("winitState");
                 let state = &mut *(state as *mut DelegateState);
-                emit_event(state, WindowEvent::HoveredFileCancelled);
+                WindowDelegate::emit_event(state, WindowEvent::HoveredFileCancelled);
             }
         }
 
@@ -616,7 +635,9 @@ impl Window2 {
                 registerForDraggedTypes:NSArray::arrayWithObject(nil, appkit::NSFilenamesPboardType)];
         }
 
-        let ds = DelegateState {
+        let dpi_factor = unsafe { NSWindow::backingScaleFactor(*window) as f64 };
+
+        let mut delegate_state = DelegateState {
             view: view.clone(),
             window: window.clone(),
             shared,
@@ -625,13 +646,19 @@ impl Window2 {
             save_style_mask: Cell::new(None),
             handle_with_fullscreen: win_attribs.fullscreen.is_some(),
             previous_position: None,
+            previous_dpi_factor: dpi_factor,
         };
-        ds.win_attribs.borrow_mut().fullscreen = None;
+        delegate_state.win_attribs.borrow_mut().fullscreen = None;
+
+        if dpi_factor != 1.0 {
+            WindowDelegate::emit_event(&mut delegate_state, WindowEvent::HiDpiFactorChanged(dpi_factor));
+            WindowDelegate::emit_resize_event(&mut delegate_state);
+        }
 
         let window = Window2 {
             view: view,
             window: window,
-            delegate: WindowDelegate::new(ds),
+            delegate: WindowDelegate::new(delegate_state),
             input_context,
         };
 
@@ -876,7 +903,7 @@ impl Window2 {
     #[inline]
     pub fn set_inner_size(&self, size: LogicalSize) {
         unsafe {
-            NSWindow::setContentSize_(*self.window, NSSize::new(size.width, size.height));
+            NSWindow::setContentSize_(*self.window, NSSize::new(size.width as CGFloat, size.height as CGFloat));
         }
     }
 
@@ -966,8 +993,8 @@ impl Window2 {
         let window_position = self.get_inner_position()
             .expect("`get_inner_position` failed");
         let point = appkit::CGPoint {
-            x: (cursor_position.x + window_position.x) as appkit::CGFloat,
-            y: (cursor_position.y + window_position.y) as appkit::CGFloat,
+            x: (cursor_position.x + window_position.x) as CGFloat,
+            y: (cursor_position.y + window_position.y) as CGFloat,
         };
         CGDisplay::warp_mouse_cursor_position(point)
             .expect("`CGWarpMouseCursorPosition` failed");
@@ -1099,8 +1126,8 @@ pub fn get_window_id(window_cocoa_id: id) -> Id {
 
 unsafe fn nswindow_set_min_dimensions<V: NSWindow + Copy>(window: V, min_size: LogicalSize) {
     window.setMinSize_(NSSize {
-        width: min_size.width,
-        height: min_size.height,
+        width: min_size.width as CGFloat,
+        height: min_size.height as CGFloat,
     });
     // If necessary, resize the window to match constraint
     let mut current_rect = NSWindow::frame(window);
@@ -1119,8 +1146,8 @@ unsafe fn nswindow_set_min_dimensions<V: NSWindow + Copy>(window: V, min_size: L
 
 unsafe fn nswindow_set_max_dimensions<V: NSWindow + Copy>(window: V, max_size: LogicalSize) {
     window.setMaxSize_(NSSize {
-        width: max_size.width,
-        height: max_size.height,
+        width: max_size.width as CGFloat,
+        height: max_size.height as CGFloat,
     });
     // If necessary, resize the window to match constraint
     let mut current_rect = NSWindow::frame(window);
