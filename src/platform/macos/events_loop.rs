@@ -395,7 +395,6 @@ impl EventsLoop {
                     modifiers: event_mods(ns_event),
                 };
                 let event = Event::WindowEvent { window_id: ::WindowId(window.id()), event: window_event };
-
                 self.shared.pending_events.lock().unwrap().push_back(event);
                 Some(into_event(WindowEvent::CursorEntered { device_id: DEVICE_ID }))
             },
@@ -441,20 +440,20 @@ impl EventsLoop {
                 let delta_x = ns_event.deltaX() as f64;
                 if delta_x != 0.0 {
                     let motion_event = DeviceEvent::Motion { axis: 0, value: delta_x };
-                    let event = Event::DeviceEvent{ device_id: DEVICE_ID, event: motion_event };
+                    let event = Event::DeviceEvent { device_id: DEVICE_ID, event: motion_event };
                     events.push_back(event);
                 }
 
                 let delta_y = ns_event.deltaY() as f64;
                 if delta_y != 0.0 {
                     let motion_event = DeviceEvent::Motion { axis: 1, value: delta_y };
-                    let event = Event::DeviceEvent{ device_id: DEVICE_ID, event: motion_event };
+                    let event = Event::DeviceEvent { device_id: DEVICE_ID, event: motion_event };
                     events.push_back(event);
                 }
 
                 if delta_x != 0.0 || delta_y != 0.0 {
                     let motion_event = DeviceEvent::MouseMotion { delta: (delta_x, delta_y) };
-                    let event = Event::DeviceEvent{ device_id: DEVICE_ID, event: motion_event };
+                    let event = Event::DeviceEvent { device_id: DEVICE_ID, event: motion_event };
                     events.push_back(event);
                 }
 

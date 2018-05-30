@@ -962,21 +962,17 @@ impl Window2 {
     }
 
     #[inline]
-    pub fn set_cursor_position(&self, mut position: LogicalPosition) -> Result<(), ()> {
-        let (window_x, window_y): (f64, f64) = self.get_position()
-            .map(Into::into)
-            .unwrap_or((0.0, 0.0));
-        position.x += window_x;
-        position.y += window_y;
-        let physical = position.to_physical(self.get_hidpi_factor());
-
-        // TODO: Check for errors.
-        let _ = CGDisplay::warp_mouse_cursor_position(appkit::CGPoint {
-            x: physical.x as appkit::CGFloat,
-            y: physical.y as appkit::CGFloat,
-        });
-        let _ = CGDisplay::associate_mouse_and_mouse_cursor_position(true);
-
+    pub fn set_cursor_position(&self, cursor_position: LogicalPosition) -> Result<(), ()> {
+        let window_position = self.get_inner_position()
+            .expect("`get_inner_position` failed");
+        let point = appkit::CGPoint {
+            x: (cursor_position.x + window_position.x) as appkit::CGFloat,
+            y: (cursor_position.y + window_position.y) as appkit::CGFloat,
+        };
+        CGDisplay::warp_mouse_cursor_position(point)
+            .expect("`CGWarpMouseCursorPosition` failed");
+        CGDisplay::associate_mouse_and_mouse_cursor_position(true)
+            .expect("`CGAssociateMouseAndMouseCursorPosition` failed");
         Ok(())
     }
 
