@@ -1,20 +1,18 @@
+#![allow(non_camel_case_types, non_snake_case, non_upper_case_globals)]
+
 use std::ffi::CString;
+use std::mem;
+use std::os::raw::*;
 
-use libc;
-use objc::runtime::{ Object, Class };
+use objc::runtime::{Class, Object};
 
-#[allow(non_camel_case_types)]
 pub type id = *mut Object;
-
-#[allow(non_camel_case_types)]
-#[allow(non_upper_case_globals)]
 pub const nil: id = 0 as id;
 
-pub type CFStringRef = *const libc::c_void;
+pub type CFStringRef = *const c_void;
 pub type CFTimeInterval = f64;
 pub type Boolean = u32;
 
-#[allow(non_upper_case_globals)]
 pub const kCFRunLoopRunHandledSource: i32 = 4;
 
 #[cfg(target_pointer_width = "32")]
@@ -22,8 +20,10 @@ pub type CGFloat = f32;
 #[cfg(target_pointer_width = "64")]
 pub type CGFloat = f64;
 
+#[allow(dead_code)]
 #[cfg(target_pointer_width = "32")]
 pub type NSUInteger = u32;
+#[allow(dead_code)]
 #[cfg(target_pointer_width = "64")]
 pub type NSUInteger = u64;
 
@@ -38,14 +38,14 @@ pub struct CGPoint {
 #[derive(Debug, Clone)]
 pub struct CGRect {
     pub origin: CGPoint,
-    pub size: CGSize
+    pub size: CGSize,
 }
 
 #[repr(C)]
 #[derive(Debug, Clone)]
 pub struct CGSize {
     pub width: CGFloat,
-    pub height: CGFloat
+    pub height: CGFloat,
 }
 
 #[link(name = "UIKit", kind = "framework")]
@@ -55,15 +55,24 @@ extern {
     pub static kCFRunLoopDefaultMode: CFStringRef;
 
     // int UIApplicationMain ( int argc, char *argv[], NSString *principalClassName, NSString *delegateClassName );
-    pub fn UIApplicationMain(argc: libc::c_int, argv: *const libc::c_char, principalClassName: id, delegateClassName: id) -> libc::c_int;
+    pub fn UIApplicationMain(
+        argc: c_int,
+        argv: *const c_char,
+        principalClassName: id,
+        delegateClassName: id,
+    ) -> c_int;
 
     // SInt32 CFRunLoopRunInMode ( CFStringRef mode, CFTimeInterval seconds, Boolean returnAfterSourceHandled );
-    pub fn CFRunLoopRunInMode(mode: CFStringRef, seconds: CFTimeInterval, returnAfterSourceHandled: Boolean) -> i32;
+    pub fn CFRunLoopRunInMode(
+        mode: CFStringRef,
+        seconds: CFTimeInterval,
+        returnAfterSourceHandled: Boolean,
+    ) -> i32;
 }
 
 extern {
-    pub fn setjmp(env: *mut libc::c_void) -> libc::c_int;
-    pub fn longjmp(env: *mut libc::c_void, val: libc::c_int);
+    pub fn setjmp(env: *mut c_void) -> c_int;
+    pub fn longjmp(env: *mut c_void, val: c_int);
 }
 
 pub trait NSString: Sized {
@@ -71,17 +80,14 @@ pub trait NSString: Sized {
         msg_send![class("NSString"), alloc]
     }
 
-    #[allow(non_snake_case)]
-    unsafe fn initWithUTF8String_(self, c_string: *const i8) -> id;
-    #[allow(non_snake_case)]
+    unsafe fn initWithUTF8String_(self, c_string: *const c_char) -> id;
     unsafe fn stringByAppendingString_(self, other: id) -> id;
     unsafe fn init_str(self, string: &str) -> Self;
-    #[allow(non_snake_case)]
-    unsafe fn UTF8String(self) -> *const libc::c_char;
+    unsafe fn UTF8String(self) -> *const c_char;
 }
 
 impl NSString for id {
-    unsafe fn initWithUTF8String_(self, c_string: *const i8) -> id {
+    unsafe fn initWithUTF8String_(self, c_string: *const c_char) -> id {
         msg_send![self, initWithUTF8String:c_string as id]
     }
 
@@ -94,7 +100,7 @@ impl NSString for id {
         self.initWithUTF8String_(cstring.as_ptr())
     }
 
-    unsafe fn UTF8String(self) -> *const libc::c_char {
+    unsafe fn UTF8String(self) -> *const c_char {
         msg_send![self, UTF8String]
     }
 }
@@ -102,6 +108,6 @@ impl NSString for id {
 #[inline]
 pub fn class(name: &str) -> *mut Class {
     unsafe {
-        ::std::mem::transmute(Class::get(name))
+        mem::transmute(Class::get(name))
     }
 }
