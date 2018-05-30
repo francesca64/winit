@@ -102,37 +102,43 @@ use self::ffi::{
 
 static mut JMPBUF: [c_int; 27] = [0; 27];
 
-#[derive(Debug, Clone)]
-pub struct MonitorId;
-
 pub struct Window {
     delegate_state: *mut DelegateState,
 }
+
+unsafe impl Send for Window {}
+unsafe impl Sync for Window {}
 
 #[derive(Debug)]
 struct DelegateState {
     events_queue: VecDeque<Event>,
     window: id,
     controller: id,
+    view: id,
     size: LogicalSize,
     scale: f64,
 }
 
 impl DelegateState {
     #[inline]
-    fn new(window: id, controller: id, size: LogicalSize, scale: f64) -> DelegateState {
+    fn new(window: id, controller: id, view: id, size: LogicalSize, scale: f64) -> DelegateState {
         DelegateState {
             events_queue: VecDeque::new(),
             window,
             controller,
+            view,
             size,
             scale,
         }
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct MonitorId;
+
 impl MonitorId {
-    fn get_uiscreen() -> id {
+    #[inline]
+    pub fn get_uiscreen(&self) -> id {
         unsafe { msg_send![Class::get("UIScreen").unwrap(), mainScreen] }
     }
 
@@ -143,7 +149,7 @@ impl MonitorId {
 
     #[inline]
     pub fn get_dimensions(&self) -> PhysicalSize {
-        let bounds: CGRect = unsafe { msg_send![MonitorId::get_uiscreen(), nativeBounds] };
+        let bounds: CGRect = unsafe { msg_send![self.get_uiscreen(), nativeBounds] };
         (bounds.size.width as f64, bounds.size.height as f64).into()
     }
 
@@ -155,7 +161,7 @@ impl MonitorId {
 
     #[inline]
     pub fn get_hidpi_factor(&self) -> f64 {
-        let scale: CGFloat = unsafe { msg_send![MonitorId::get_uiscreen(), nativeScale] };
+        let scale: CGFloat = unsafe { msg_send![self.get_uiscreen(), nativeScale] };
         scale as f64
     }
 }
@@ -272,6 +278,16 @@ impl Window {
         _pl_alltributes: PlatformSpecificWindowBuilderAttributes,
     ) -> Result<Window, CreationError> {
         Ok(Window { delegate_state: ev.delegate_state })
+    }
+
+    #[inline]
+    pub fn get_uiwindow(&self) -> id {
+        unsafe { (*self.delegate_state).window }
+    }
+
+    #[inline]
+    pub fn get_uiview(&self) -> id {
+        unsafe { (*self.delegate_state).view }
     }
 
     #[inline]
@@ -411,10 +427,14 @@ fn create_delegate_class() {
             let view_controller: id = msg_send![Class::get("MainViewController").unwrap(), alloc];
             let view_controller: id = msg_send![view_controller, init];
 
+            let class = Class::get("MainView").unwrap();
+            let view: id = msg_send![class, alloc];
+            let view: id = msg_send![view, initForGl:&bounds];
+
             let _: () = msg_send![window, setRootViewController:view_controller];
             let _: () = msg_send![window, makeKeyAndVisible];
 
-            let state = Box::new(DelegateState::new(window, view_controller, size, scale as f64));
+            let state = Box::new(DelegateState::new(window, view_controller, view, size, scale as f64));
             let state_ptr: *mut DelegateState = mem::transmute(state);
             this.set_ivar("winitState", state_ptr as *mut c_void);
 
