@@ -98,6 +98,8 @@ use self::ffi::{
     NSString,
     setjmp,
     UIApplicationMain,
+    UIViewAutoresizingFlexibleWidth,
+    UIViewAutoresizingFlexibleHeight,
  };
 
 static mut JMPBUF: [c_int; 27] = [0; 27];
@@ -139,7 +141,8 @@ pub struct MonitorId;
 impl MonitorId {
     #[inline]
     pub fn get_uiscreen(&self) -> id {
-        unsafe { msg_send![Class::get("UIScreen").unwrap(), mainScreen] }
+        let class = Class::get("UIScreen").expect("Failed to get class `UIScreen`");
+        unsafe { msg_send![class, mainScreen] }
     }
 
     #[inline]
@@ -177,7 +180,8 @@ impl EventsLoop {
     pub fn new() -> EventsLoop {
         unsafe {
             if setjmp(mem::transmute(&mut JMPBUF)) != 0 {
-                let app: id = msg_send![Class::get("UIApplication").unwrap(), sharedApplication];
+                let app_class = Class::get("UIApplication").expect("Failed to get class `UIApplication`");
+                let app: id = msg_send![app_class, sharedApplication];
                 let delegate: id = msg_send![app, delegate];
                 let state: *mut c_void = *(&*delegate).get_ivar("winitState");
                 let delegate_state = state as *mut DelegateState;
@@ -185,8 +189,8 @@ impl EventsLoop {
             }
         }
 
-        create_delegate_class();
         create_view_class();
+        create_delegate_class();
         start_app();
 
         panic!("Couldn't create `UIApplication`!")
@@ -414,21 +418,24 @@ impl Window {
 
 fn create_delegate_class() {
     extern fn did_finish_launching(this: &mut Object, _: Sel, _: id, _: id) -> BOOL {
+        let screen_class = Class::get("UIScreen").expect("Failed to get class `UIScreen`");
+        let window_class = Class::get("UIWindow").expect("Failed to get class `UIWindow`");
+        let controller_class = Class::get("MainViewController").expect("Failed to get class `MainViewController`");
+        let view_class = Class::get("MainView").expect("Failed to get class `MainView`");
         unsafe {
-            let main_screen: id = msg_send![Class::get("UIScreen").unwrap(), mainScreen];
+            let main_screen: id = msg_send![screen_class, mainScreen];
             let bounds: CGRect = msg_send![main_screen, bounds];
             let scale: CGFloat = msg_send![main_screen, nativeScale];
 
-            let window: id = msg_send![Class::get("UIWindow").unwrap(), alloc];
+            let window: id = msg_send![window_class, alloc];
             let window: id = msg_send![window, initWithFrame:bounds.clone()];
 
             let size = (bounds.size.width as f64, bounds.size.height as f64).into();
 
-            let view_controller: id = msg_send![Class::get("MainViewController").unwrap(), alloc];
+            let view_controller: id = msg_send![controller_class, alloc];
             let view_controller: id = msg_send![view_controller, init];
 
-            let class = Class::get("MainView").unwrap();
-            let view: id = msg_send![class, alloc];
+            let view: id = msg_send![view_class, alloc];
             let view: id = msg_send![view, initForGl:&bounds];
 
             let _: () = msg_send![window, setRootViewController:view_controller];
@@ -535,8 +542,8 @@ fn create_delegate_class() {
         }
     }
 
-    let ui_responder = Class::get("UIResponder").unwrap();
-    let mut decl = ClassDecl::new("AppDelegate", ui_responder).unwrap();
+    let ui_responder = Class::get("UIResponder").expect("Failed to get class `UIResponder`");
+    let mut decl = ClassDecl::new("AppDelegate", ui_responder).expect("Failed to declare class `AppDelegate`");
 
     unsafe {
         decl.add_method(sel!(application:didFinishLaunchingWithOptions:),
@@ -580,10 +587,39 @@ fn create_delegate_class() {
     }
 }
 
-fn create_view_class() {
-    let ui_view_controller = Class::get("UIViewController").unwrap();
-    let decl = ClassDecl::new("MainViewController", ui_view_controller).unwrap();
+// TODO: winit shouldn't contain GL-specfiic code
+pub fn create_view_class() {
+    let superclass = Class::get("UIViewController").expect("Failed to get class `UIViewController`");
+    let decl = ClassDecl::new("MainViewController", superclass).expect("Failed to declare class `MainViewController`");
     decl.register();
+
+    extern fn init_for_gl(this: &Object, _: Sel, frame: *const c_void) -> id {
+        unsafe {
+            let bounds: *const CGRect = mem::transmute(frame);
+            let view: id = msg_send![this, initWithFrame:(*bounds).clone()];
+
+            let mask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+            let _: () = msg_send![view, setAutoresizingMask:mask];
+            let _: () = msg_send![view, setAutoresizesSubviews:YES];
+
+            let layer: id = msg_send![view, layer];
+            let _ : () = msg_send![layer, setOpaque:YES];
+
+            view
+        }
+    }
+
+    extern fn layer_class(_: &Class, _: Sel) -> *const Class {
+        unsafe { mem::transmute(Class::get("CAEAGLLayer").expect("Failed to get class `CAEAGLLayer`")) }
+    }
+
+    let superclass = Class::get("UIView").expect("Failed to get class `UIView`");
+    let mut decl = ClassDecl::new("MainView", superclass).expect("Failed to declare class `MainView`");
+    unsafe {
+        decl.add_method(sel!(initForGl:), init_for_gl as extern fn(&Object, Sel, *const c_void) -> id);
+        decl.add_class_method(sel!(layerClass), layer_class as extern fn(&Class, Sel) -> *const Class);
+        decl.register();
+    }
 }
 
 #[inline]

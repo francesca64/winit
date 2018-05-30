@@ -15,15 +15,16 @@ pub type Boolean = u32;
 
 pub const kCFRunLoopRunHandledSource: i32 = 4;
 
+pub const UIViewAutoresizingFlexibleWidth: NSUInteger = 1 << 1;
+pub const UIViewAutoresizingFlexibleHeight: NSUInteger = 1 << 4;
+
 #[cfg(target_pointer_width = "32")]
 pub type CGFloat = f32;
 #[cfg(target_pointer_width = "64")]
 pub type CGFloat = f64;
 
-#[allow(dead_code)]
 #[cfg(target_pointer_width = "32")]
 pub type NSUInteger = u32;
-#[allow(dead_code)]
 #[cfg(target_pointer_width = "64")]
 pub type NSUInteger = u64;
 
