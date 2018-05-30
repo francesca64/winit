@@ -60,7 +60,7 @@
 
 #![cfg(target_os = "ios")]
 
-use std::{mem, ptr};
+use std::{fmt, mem, ptr};
 use std::collections::VecDeque;
 use std::os::raw::*;
 
@@ -122,7 +122,6 @@ struct DelegateState {
 }
 
 impl DelegateState {
-    #[inline]
     fn new(window: id, controller: id, view: id, size: LogicalSize, scale: f64) -> DelegateState {
         DelegateState {
             events_queue: VecDeque::new(),
@@ -135,8 +134,39 @@ impl DelegateState {
     }
 }
 
-#[derive(Debug, Clone)]
+impl Drop for DelegateState {
+    fn drop(&mut self) {
+        unsafe {
+            let _: () = msg_send![self.window, release];
+            let _: () = msg_send![self.controller, release];
+            let _: () = msg_send![self.view, release];
+        }
+    }
+}
+
+#[derive(Clone)]
 pub struct MonitorId;
+
+impl fmt::Debug for MonitorId {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        #[derive(Debug)]
+        struct MonitorId {
+            name: Option<String>,
+            dimensions: PhysicalSize,
+            position: PhysicalPosition,
+            hidpi_factor: f64,
+        }
+
+        let monitor_id_proxy = MonitorId {
+            name: self.get_name(),
+            dimensions: self.get_dimensions(),
+            position: self.get_position(),
+            hidpi_factor: self.get_hidpi_factor(),
+        };
+
+        monitor_id_proxy.fmt(f)
+    }
+}
 
 impl MonitorId {
     #[inline]
@@ -275,6 +305,8 @@ pub struct DeviceId;
 #[derive(Clone, Default)]
 pub struct PlatformSpecificWindowBuilderAttributes;
 
+// TODO: AFAIK transparency is enabled by default on iOS,
+// so to be consistent with other platforms we have to change that.
 impl Window {
     pub fn new(
         ev: &EventsLoop,
@@ -595,7 +627,7 @@ pub fn create_view_class() {
 
     extern fn init_for_gl(this: &Object, _: Sel, frame: *const c_void) -> id {
         unsafe {
-            let bounds: *const CGRect = mem::transmute(frame);
+            let bounds = frame as *const CGRect;
             let view: id = msg_send![this, initWithFrame:(*bounds).clone()];
 
             let mask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
@@ -613,7 +645,7 @@ pub fn create_view_class() {
         unsafe { mem::transmute(Class::get("CAEAGLLayer").expect("Failed to get class `CAEAGLLayer`")) }
     }
 
-    let superclass = Class::get("UIView").expect("Failed to get class `UIView`");
+    let superclass = Class::get("GLKView").expect("Failed to get class `GLKView`");
     let mut decl = ClassDecl::new("MainView", superclass).expect("Failed to declare class `MainView`");
     unsafe {
         decl.add_method(sel!(initForGl:), init_for_gl as extern fn(&Object, Sel, *const c_void) -> id);
