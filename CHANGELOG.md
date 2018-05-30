@@ -7,6 +7,7 @@
 - The Windows backend is now DPI aware. `WindowEvent::HiDpiFactorChanged` is implemented, and `MonitorId::get_hidpi_factor` and `Window::hidpi_factor` return accurate values.
 - `WindowEvent::HiDpiFactorChanged` implemented on X11.
 - On macOS, `Window::set_cursor_position` is now relative to the client area.
+- On macOS, setting the maximum and minimum dimensions now applies to the client area rather than to the window.
 - **Breaking:** All deprecated methods have been removed.
 
 # Version 0.15.0 (2018-05-22)

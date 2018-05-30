@@ -1124,41 +1124,48 @@ pub fn get_window_id(window_cocoa_id: id) -> Id {
     Id(window_cocoa_id as *const objc::runtime::Object as usize)
 }
 
-unsafe fn nswindow_set_min_dimensions<V: NSWindow + Copy>(window: V, min_size: LogicalSize) {
+unsafe fn nswindow_set_min_dimensions<V: NSWindow + Copy>(window: V, mut min_size: LogicalSize) {
+    let mut current_rect = NSWindow::frame(window);
+    let content_rect = NSWindow::contentRectForFrameRect_(window, NSWindow::frame(window));
+    // Convert from client area size to window size
+    min_size.width += (current_rect.size.width - content_rect.size.width) as f64; // this tends to be 0
+    min_size.height += (current_rect.size.height - content_rect.size.height) as f64;
     window.setMinSize_(NSSize {
         width: min_size.width as CGFloat,
         height: min_size.height as CGFloat,
     });
     // If necessary, resize the window to match constraint
-    let mut current_rect = NSWindow::frame(window);
     if current_rect.size.width < min_size.width {
         current_rect.size.width = min_size.width;
         window.setFrame_display_(current_rect, 0)
     }
     if current_rect.size.height < min_size.height {
-        // The origin point of a rectangle is at its bottom left in Cocoa. To
-        // ensure the window's top-left point remains the same:
+        // The origin point of a rectangle is at its bottom left in Cocoa.
+        // To ensure the window's top-left point remains the same:
         current_rect.origin.y += current_rect.size.height - min_size.height;
         current_rect.size.height = min_size.height;
         window.setFrame_display_(current_rect, 0)
     }
 }
 
-unsafe fn nswindow_set_max_dimensions<V: NSWindow + Copy>(window: V, max_size: LogicalSize) {
+unsafe fn nswindow_set_max_dimensions<V: NSWindow + Copy>(window: V, mut max_size: LogicalSize) {
+    let mut current_rect = NSWindow::frame(window);
+    let content_rect = NSWindow::contentRectForFrameRect_(window, NSWindow::frame(window));
+    // Convert from client area size to window size
+    max_size.width += (current_rect.size.width - content_rect.size.width) as f64; // this tends to be 0
+    max_size.height += (current_rect.size.height - content_rect.size.height) as f64;
     window.setMaxSize_(NSSize {
         width: max_size.width as CGFloat,
         height: max_size.height as CGFloat,
     });
     // If necessary, resize the window to match constraint
-    let mut current_rect = NSWindow::frame(window);
     if current_rect.size.width > max_size.width {
         current_rect.size.width = max_size.width;
         window.setFrame_display_(current_rect, 0)
     }
     if current_rect.size.height > max_size.height {
-        // The origin point of a rectangle is at its bottom left in
-        // Cocoa. To ensure the window's top-left point remains the
-        // same:
+        // The origin point of a rectangle is at its bottom left in Cocoa.
+        // To ensure the window's top-left point remains the same:
         current_rect.origin.y += current_rect.size.height - max_size.height;
         current_rect.size.height = max_size.height;
         window.setFrame_display_(current_rect, 0)
