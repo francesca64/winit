@@ -694,9 +694,7 @@ impl Window2 {
             WINDOW2_CLASS = decl.register();
         });
 
-        unsafe {
-            WINDOW2_CLASS
-        }
+        unsafe { WINDOW2_CLASS }
     }
 
     fn create_window(

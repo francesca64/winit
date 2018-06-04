@@ -363,6 +363,20 @@ impl EventsLoop {
                 event
             },
 
+            appkit::NSKeyDown => {
+                if let Some(ref window) = maybe_window {
+                    let _: () = msg_send![*window.view, forwardedKeyDown:ns_event];
+                }
+                None
+            },
+
+            appkit::NSKeyUp => {
+                if let Some(ref window) = maybe_window {
+                    let _: () = msg_send![*window.view, forwardedKeyUp:ns_event];
+                }
+                None
+            },
+
             appkit::NSLeftMouseDown => { Some(into_event(WindowEvent::MouseInput { device_id: DEVICE_ID, state: ElementState::Pressed, button: MouseButton::Left, modifiers: event_mods(ns_event) })) },
             appkit::NSLeftMouseUp => { Some(into_event(WindowEvent::MouseInput { device_id: DEVICE_ID, state: ElementState::Released, button: MouseButton::Left, modifiers: event_mods(ns_event) })) },
             appkit::NSRightMouseDown => { Some(into_event(WindowEvent::MouseInput { device_id: DEVICE_ID, state: ElementState::Pressed, button: MouseButton::Right, modifiers: event_mods(ns_event) })) },

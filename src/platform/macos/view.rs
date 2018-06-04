@@ -108,8 +108,10 @@ lazy_static! {
             sel!(doCommandBySelector:),
             do_command_by_selector as extern fn(&Object, Sel, Sel),
         );
-        decl.add_method(sel!(keyDown:), key_down as extern fn(&Object, Sel, id));
-        decl.add_method(sel!(keyUp:), key_up as extern fn(&Object, Sel, id));
+        decl.add_method(sel!(keyDown:), noop as extern fn(&Object, Sel, id));
+        decl.add_method(sel!(keyUp:), noop as extern fn(&Object, Sel, id));
+        decl.add_method(sel!(forwardedKeyDown:), key_down as extern fn(&Object, Sel, id));
+        decl.add_method(sel!(forwardedKeyUp:), key_up as extern fn(&Object, Sel, id));
         decl.add_method(sel!(insertTab:), insert_tab as extern fn(&Object, Sel, id));
         decl.add_method(sel!(insertBackTab:), insert_back_tab as extern fn(&Object, Sel, id));
         decl.add_ivar::<*mut c_void>("winitState");
@@ -332,6 +334,8 @@ extern fn do_command_by_selector(this: &Object, _sel: Sel, command: Sel) {
             .append(&mut events);
     }
 }
+
+extern fn noop(_this: &Object, _sel: Sel, _id: id) {}
 
 extern fn key_down(this: &Object, _sel: Sel, event: id) {
     //println!("keyDown");
