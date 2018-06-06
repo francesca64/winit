@@ -9,6 +9,7 @@
 - On X11, `with_override_redirect` now actually enables override redirect.
 - macOS now generates `VirtualKeyCode::LAlt` and `VirtualKeyCode::RAlt` instead of `None` for both.
 - On macOS, `VirtualKeyCode::RWin` and `VirtualKeyCode::LWin` are no longer switched.
+- On macOS, key events from system shortcuts are once again detected.
 
 # Version 0.15.0 (2018-05-22)
 

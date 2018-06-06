@@ -298,7 +298,6 @@ extern fn insert_text(this: &Object, _sel: Sel, string: id, _replacement_range: 
         }
 
         state.from_responder_chain = false;
-        state.processed_events.clear();
         state.forwarded_events.clear();
     }
 }
@@ -361,7 +360,6 @@ extern fn do_command_by_selector(this: &Object, _sel: Sel, command: Sel) {
         }
 
         state.from_responder_chain = false;
-        state.processed_events.clear();
         state.forwarded_events.clear();
     }
 }
@@ -373,6 +371,9 @@ extern fn key_down(this: &Object, _sel: Sel, event: id) {
         let state = &mut *(state_ptr as *mut ViewState);
         let window_id = WindowId(get_window_id(state.window));
 
+        if !state.from_responder_chain {
+            state.processed_events.clear();
+        }
         state.from_responder_chain = true;
         state.processed_events.push(msg_send![event, timestamp]);
 
@@ -477,6 +478,8 @@ fn forwarded_key_event(this: &Object, event: id, key_state: ElementState) -> boo
             .is_none();
 
         if unprocessed {
+            //println!("forwarded");
+
             let keycode: c_ushort = msg_send![event, keyCode];
             let virtual_keycode = to_virtual_key_code(keycode);
             let scancode = keycode as u32;
@@ -489,7 +492,7 @@ fn forwarded_key_event(this: &Object, event: id, key_state: ElementState) -> boo
             });
         }
 
-        !unprocessed
+        unprocessed
     }
 }
 
