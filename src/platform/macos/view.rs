@@ -25,7 +25,9 @@ struct ViewState {
     ime_spot: Option<(i32, i32)>,
     raw_characters: Option<String>,
     last_insert: Option<String>,
+    from_responder_chain: bool,
     processed_events: Vec<NSTimeInterval>,
+    forwarded_events: Vec<KeyboardInput>,
 }
 
 pub fn new_view(window: id, shared: Weak<Shared>) -> IdRef {
@@ -35,7 +37,9 @@ pub fn new_view(window: id, shared: Weak<Shared>) -> IdRef {
         ime_spot: None,
         raw_characters: None,
         last_insert: None,
+        from_responder_chain: false,
         processed_events: Vec::with_capacity(16),
+        forwarded_events: Vec::with_capacity(16),
     };
     unsafe {
         // This is free'd in `dealloc`
@@ -293,7 +297,9 @@ extern fn insert_text(this: &Object, _sel: Sel, string: id, _replacement_range: 
                 .append(&mut events);
         }
 
+        state.from_responder_chain = false;
         state.processed_events.clear();
+        state.forwarded_events.clear();
     }
 }
 
@@ -311,34 +317,52 @@ extern fn do_command_by_selector(this: &Object, _sel: Sel, command: Sel) {
             return;
         };
 
-        let mut events = VecDeque::with_capacity(1);
-        if command == sel!(insertNewline:) {
-            // The `else` condition would emit the same character, but I'm keeping this here both...
-            // 1) as a reminder for how `doCommandBySelector` works
-            // 2) to make our use of carriage return explicit
+        if state.from_responder_chain {
+            let mut events = VecDeque::with_capacity(1);
+            if command == sel!(insertNewline:) {
+                // The `else` condition would emit the same character, but I'm keeping this here both...
+                // 1) as a reminder for how `doCommandBySelector` works
+                // 2) to make our use of carriage return explicit
 
-            events.push_back(Event::WindowEvent {
-                window_id: WindowId(get_window_id(state.window)),
-                event: WindowEvent::ReceivedCharacter('\r'),
-            });
-        } else {
-            let raw_characters = state.raw_characters.take();
-            if let Some(raw_characters) = raw_characters {
-                for character in raw_characters.chars() {
-                    events.push_back(Event::WindowEvent {
-                        window_id: WindowId(get_window_id(state.window)),
-                        event: WindowEvent::ReceivedCharacter(character),
-                    });
+                events.push_back(Event::WindowEvent {
+                    window_id: WindowId(get_window_id(state.window)),
+                    event: WindowEvent::ReceivedCharacter('\r'),
+                });
+            } else {
+                let raw_characters = state.raw_characters.take();
+                if let Some(raw_characters) = raw_characters {
+                    for character in raw_characters.chars() {
+                        events.push_back(Event::WindowEvent {
+                            window_id: WindowId(get_window_id(state.window)),
+                            event: WindowEvent::ReceivedCharacter(character),
+                        });
+                    }
                 }
+            };
+
+            shared.pending_events
+                .lock()
+                .unwrap()
+                .append(&mut events);
+        } else {
+            let len = state.forwarded_events.len();
+            let mut events_lock = shared.pending_events.lock().unwrap();
+            events_lock.reserve_exact(len);
+            for input in state.forwarded_events.drain(0..len) {
+                let window_event = Event::WindowEvent {
+                    window_id: WindowId(get_window_id(state.window)),
+                    event: WindowEvent::KeyboardInput {
+                        device_id: DEVICE_ID,
+                        input,
+                    },
+                };
+                events_lock.push_back(window_event);
             }
-        };
+        }
 
-        shared.pending_events
-            .lock()
-            .unwrap()
-            .append(&mut events);
-
+        state.from_responder_chain = false;
         state.processed_events.clear();
+        state.forwarded_events.clear();
     }
 }
 
@@ -349,6 +373,7 @@ extern fn key_down(this: &Object, _sel: Sel, event: id) {
         let state = &mut *(state_ptr as *mut ViewState);
         let window_id = WindowId(get_window_id(state.window));
 
+        state.from_responder_chain = true;
         state.processed_events.push(msg_send![event, timestamp]);
 
         let keycode: c_ushort = msg_send![event, keyCode];
@@ -412,6 +437,7 @@ extern fn key_up(this: &Object, _sel: Sel, event: id) {
         let state = &mut *(state_ptr as *mut ViewState);
 
         state.last_insert = None;
+        state.from_responder_chain = true;
         state.processed_events.push(msg_send![event, timestamp]);
 
         let keycode: c_ushort = msg_send![event, keyCode];
@@ -439,7 +465,7 @@ extern fn key_up(this: &Object, _sel: Sel, event: id) {
     }
 }
 
-extern fn forwarded_key_event(this: &Object, event: id, key_state: ElementState) {
+fn forwarded_key_event(this: &Object, event: id, key_state: ElementState) -> bool {
     unsafe {
         let state_ptr: *mut c_void = *this.get_ivar("winitState");
         let state = &mut *(state_ptr as *mut ViewState);
@@ -449,36 +475,31 @@ extern fn forwarded_key_event(this: &Object, event: id, key_state: ElementState)
             .iter()
             .position(|stored_timestamp| timestamp == *stored_timestamp)
             .is_none();
+
         if unprocessed {
             let keycode: c_ushort = msg_send![event, keyCode];
             let virtual_keycode = to_virtual_key_code(keycode);
             let scancode = keycode as u32;
 
-            let window_event = Event::WindowEvent {
-                window_id: WindowId(get_window_id(state.window)),
-                event: WindowEvent::KeyboardInput {
-                    device_id: DEVICE_ID,
-                    input: KeyboardInput {
-                        state: key_state,
-                        scancode,
-                        virtual_keycode,
-                        modifiers: event_mods(event),
-                    },
-                },
-            };
-
-            if let Some(shared) = state.shared.upgrade() {
-                shared.pending_events
-                    .lock()
-                    .unwrap()
-                    .push_back(window_event);
-            }
+            state.forwarded_events.push(KeyboardInput {
+                state: key_state,
+                scancode,
+                virtual_keycode,
+                modifiers: event_mods(event),
+            });
         }
+
+        !unprocessed
     }
 }
 
 extern fn forwarded_key_down(this: &Object, _sel: Sel, event: id) {
-    forwarded_key_event(this, event, ElementState::Pressed);
+    if forwarded_key_event(this, event, ElementState::Pressed) {
+        unsafe {
+            let array: id = msg_send![class("NSArray"), arrayWithObject:event];
+            let (): _ = msg_send![this, interpretKeyEvents:array];
+        }
+    }
 }
 
 extern fn forwarded_key_up(this: &Object, _sel: Sel, event: id) {
