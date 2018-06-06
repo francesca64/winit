@@ -9,7 +9,7 @@ use std::sync::Weak;
 
 use cocoa::base::{class, id, nil};
 use cocoa::appkit::NSWindow;
-use cocoa::foundation::{NSPoint, NSRect, NSSize, NSString, NSUInteger};
+use cocoa::foundation::{NSPoint, NSRect, NSSize, NSString, NSTimeInterval, NSUInteger};
 use objc::declare::ClassDecl;
 use objc::runtime::{Class, Object, Protocol, Sel, BOOL};
 
@@ -25,6 +25,7 @@ struct ViewState {
     ime_spot: Option<(i32, i32)>,
     raw_characters: Option<String>,
     last_insert: Option<String>,
+    processed_events: Vec<NSTimeInterval>,
 }
 
 pub fn new_view(window: id, shared: Weak<Shared>) -> IdRef {
@@ -34,6 +35,7 @@ pub fn new_view(window: id, shared: Weak<Shared>) -> IdRef {
         ime_spot: None,
         raw_characters: None,
         last_insert: None,
+        processed_events: Vec::with_capacity(16),
     };
     unsafe {
         // This is free'd in `dealloc`
@@ -108,10 +110,10 @@ lazy_static! {
             sel!(doCommandBySelector:),
             do_command_by_selector as extern fn(&Object, Sel, Sel),
         );
-        decl.add_method(sel!(keyDown:), noop as extern fn(&Object, Sel, id));
-        decl.add_method(sel!(keyUp:), noop as extern fn(&Object, Sel, id));
-        decl.add_method(sel!(forwardedKeyDown:), key_down as extern fn(&Object, Sel, id));
-        decl.add_method(sel!(forwardedKeyUp:), key_up as extern fn(&Object, Sel, id));
+        decl.add_method(sel!(keyDown:), key_down as extern fn(&Object, Sel, id));
+        decl.add_method(sel!(keyUp:), key_up as extern fn(&Object, Sel, id));
+        decl.add_method(sel!(forwardedKeyDown:), forwarded_key_down as extern fn(&Object, Sel, id));
+        decl.add_method(sel!(forwardedKeyUp:), forwarded_key_up as extern fn(&Object, Sel, id));
         decl.add_method(sel!(insertTab:), insert_tab as extern fn(&Object, Sel, id));
         decl.add_method(sel!(insertBackTab:), insert_back_tab as extern fn(&Object, Sel, id));
         decl.add_ivar::<*mut c_void>("winitState");
@@ -290,6 +292,8 @@ extern fn insert_text(this: &Object, _sel: Sel, string: id, _replacement_range: 
                 .unwrap()
                 .append(&mut events);
         }
+
+        state.processed_events.clear();
     }
 }
 
@@ -312,6 +316,7 @@ extern fn do_command_by_selector(this: &Object, _sel: Sel, command: Sel) {
             // The `else` condition would emit the same character, but I'm keeping this here both...
             // 1) as a reminder for how `doCommandBySelector` works
             // 2) to make our use of carriage return explicit
+
             events.push_back(Event::WindowEvent {
                 window_id: WindowId(get_window_id(state.window)),
                 event: WindowEvent::ReceivedCharacter('\r'),
@@ -332,10 +337,10 @@ extern fn do_command_by_selector(this: &Object, _sel: Sel, command: Sel) {
             .lock()
             .unwrap()
             .append(&mut events);
+
+        state.processed_events.clear();
     }
 }
-
-extern fn noop(_this: &Object, _sel: Sel, _id: id) {}
 
 extern fn key_down(this: &Object, _sel: Sel, event: id) {
     //println!("keyDown");
@@ -343,6 +348,8 @@ extern fn key_down(this: &Object, _sel: Sel, event: id) {
         let state_ptr: *mut c_void = *this.get_ivar("winitState");
         let state = &mut *(state_ptr as *mut ViewState);
         let window_id = WindowId(get_window_id(state.window));
+
+        state.processed_events.push(msg_send![event, timestamp]);
 
         let keycode: c_ushort = msg_send![event, keyCode];
         let virtual_keycode = to_virtual_key_code(keycode);
@@ -405,6 +412,7 @@ extern fn key_up(this: &Object, _sel: Sel, event: id) {
         let state = &mut *(state_ptr as *mut ViewState);
 
         state.last_insert = None;
+        state.processed_events.push(msg_send![event, timestamp]);
 
         let keycode: c_ushort = msg_send![event, keyCode];
         let virtual_keycode = to_virtual_key_code(keycode);
@@ -429,6 +437,52 @@ extern fn key_up(this: &Object, _sel: Sel, event: id) {
                 .push_back(window_event);
         }
     }
+}
+
+extern fn forwarded_key_event(this: &Object, event: id, key_state: ElementState) {
+    unsafe {
+        let state_ptr: *mut c_void = *this.get_ivar("winitState");
+        let state = &mut *(state_ptr as *mut ViewState);
+
+        let timestamp: NSTimeInterval = msg_send![event, timestamp];
+        let unprocessed = state.processed_events
+            .iter()
+            .position(|stored_timestamp| timestamp == *stored_timestamp)
+            .is_none();
+        if unprocessed {
+            let keycode: c_ushort = msg_send![event, keyCode];
+            let virtual_keycode = to_virtual_key_code(keycode);
+            let scancode = keycode as u32;
+
+            let window_event = Event::WindowEvent {
+                window_id: WindowId(get_window_id(state.window)),
+                event: WindowEvent::KeyboardInput {
+                    device_id: DEVICE_ID,
+                    input: KeyboardInput {
+                        state: key_state,
+                        scancode,
+                        virtual_keycode,
+                        modifiers: event_mods(event),
+                    },
+                },
+            };
+
+            if let Some(shared) = state.shared.upgrade() {
+                shared.pending_events
+                    .lock()
+                    .unwrap()
+                    .push_back(window_event);
+            }
+        }
+    }
+}
+
+extern fn forwarded_key_down(this: &Object, _sel: Sel, event: id) {
+    forwarded_key_event(this, event, ElementState::Pressed);
+}
+
+extern fn forwarded_key_up(this: &Object, _sel: Sel, event: id) {
+    forwarded_key_event(this, event, ElementState::Released);
 }
 
 extern fn insert_tab(this: &Object, _sel: Sel, _sender: id) {
