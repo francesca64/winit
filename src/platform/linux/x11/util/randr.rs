@@ -50,19 +50,26 @@ impl From<*mut XRRCrtcInfo> for MonitorRepr {
     }
 }
 
+pub fn dpi_factor_is_valid(dpi_factor: f64) -> bool {
+    dpi_factor.is_sign_positive() && dpi_factor.is_normal()
+}
+
 pub fn calc_dpi_factor(
     (width_px, height_px): (u32, u32),
     (width_mm, height_mm): (u64, u64),
 ) -> f64 {
     // Override DPI if `WINIT_HIDPI_FACTOR` variable is set
-    if let Ok(dpi_factor_str) = env::var("WINIT_HIDPI_FACTOR") {
-        if let Ok(dpi_factor) = f64::from_str(&dpi_factor_str) {
-            if dpi_factor <= 0. {
-                panic!("Expected `WINIT_HIDPI_FACTOR` to be bigger than 0, got '{}'", dpi_factor);
-            }
-
-            return dpi_factor;
+    let dpi_override = env::var("WINIT_HIDPI_FACTOR")
+        .ok()
+        .and_then(|var| f64::from_str(&var).ok());
+    if let Some(dpi_override) = dpi_override {
+        if !dpi_factor_is_valid(dpi_factor) {
+            panic!(
+                "`WINIT_HIDPI_FACTOR` invalid; DPI factors must be normal floats greater than 0. Got `{}`",
+                dpi_factor,
+            );
         }
+        return dpi_factor;
     }
 
     // See http://xpra.org/trac/ticket/728 for more information
