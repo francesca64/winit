@@ -81,7 +81,9 @@ pub fn calc_dpi_factor(
         (width_px as f64 * height_px as f64) / (width_mm as f64 * height_mm as f64)
     ).sqrt();
     // Quantize 1/12 step size
-    ((ppmm * (12.0 * 25.4 / 96.0)).round() / 12.0).max(1.0)
+    let dpi_factor = ((ppmm * (12.0 * 25.4 / 96.0)).round() / 12.0).max(1.0);
+    assert!(dpi_factor_is_valid(dpi_factor));
+    dpi_factor
 }
 
 impl XConnection {
