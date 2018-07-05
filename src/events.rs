@@ -13,8 +13,8 @@ pub enum Event {
         device_id: DeviceId,
         event: DeviceEvent,
     },
+    Idle,
     Awakened,
-
     /// The application has been suspended or resumed.
     ///
     /// The parameter is true if app was suspended, and false if it has been resumed.

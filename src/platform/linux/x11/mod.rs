@@ -29,7 +29,8 @@ use {
     CreationError,
     DeviceEvent,
     Event,
-    EventsLoopClosed,
+    EventHandler,
+    EventLoopClosed,
     KeyboardInput,
     LogicalPosition,
     LogicalSize,
@@ -41,7 +42,7 @@ use platform::PlatformSpecificWindowBuilderAttributes;
 use self::dnd::{Dnd, DndState};
 use self::ime::{ImeReceiver, ImeSender, ImeCreationError, Ime};
 
-pub struct EventsLoop {
+pub struct EventLoop {
     xconn: Arc<XConnection>,
     wm_delete_window: ffi::Atom,
     dnd: Dnd,
@@ -60,14 +61,14 @@ pub struct EventsLoop {
 }
 
 #[derive(Clone)]
-pub struct EventsLoopProxy {
+pub struct EventLoopProxy {
     pending_wakeup: Weak<AtomicBool>,
     xconn: Weak<XConnection>,
     wakeup_dummy_window: ffi::Window,
 }
 
-impl EventsLoop {
-    pub fn new(xconn: Arc<XConnection>) -> EventsLoop {
+impl EventLoop {
+    pub fn new(xconn: Arc<XConnection>) -> EventLoop {
         let root = unsafe { (xconn.xlib.XDefaultRootWindow)(xconn.display) };
 
         let wm_delete_window = unsafe { xconn.get_atom_unchecked(b"WM_DELETE_WINDOW\0") };
@@ -142,7 +143,7 @@ impl EventsLoop {
             )
         };
 
-        let result = EventsLoop {
+        let result = EventLoop {
             xconn,
             wm_delete_window,
             dnd,
@@ -177,56 +178,59 @@ impl EventsLoop {
         &self.xconn
     }
 
-    pub fn create_proxy(&self) -> EventsLoopProxy {
-        EventsLoopProxy {
+    pub fn create_proxy(&self) -> EventLoopProxy {
+        EventLoopProxy {
             pending_wakeup: Arc::downgrade(&self.pending_wakeup),
             xconn: Arc::downgrade(&self.xconn),
             wakeup_dummy_window: self.wakeup_dummy_window,
         }
     }
 
-    pub fn poll_events<F>(&mut self, mut callback: F)
-        where F: FnMut(Event)
-    {
-        let mut xev = unsafe { mem::uninitialized() };
+    pub fn run_forever<H: EventHandler>(&mut self, mut handler: H) -> ! {
+        let mut control_flow = ControlFlow::Poll;
         loop {
-            // Get next event
-            unsafe {
-                // Ensure XNextEvent won't block
-                let count = (self.xconn.xlib.XPending)(self.xconn.display);
-                if count == 0 {
-                    break;
-                }
-
-                (self.xconn.xlib.XNextEvent)(self.xconn.display, &mut xev);
-            }
-            self.process_event(&mut xev, &mut callback);
-        }
-    }
-
-    pub fn run_forever<F>(&mut self, mut callback: F)
-        where F: FnMut(Event) -> ControlFlow
-    {
-        let mut xev = unsafe { mem::uninitialized() };
-
-        loop {
-            unsafe { (self.xconn.xlib.XNextEvent)(self.xconn.display, &mut xev) }; // Blocks as necessary
-
-            let mut control_flow = ControlFlow::Continue;
-
-            // Track whether or not `Break` was returned when processing the event.
-            {
-                let mut cb = |event| {
-                    if let ControlFlow::Break = callback(event) {
-                        control_flow = ControlFlow::Break;
+            match control_flow {
+                ControlFlow::Poll | ControlFlow::Wait => unsafe {
+                    let mut wait = control_flow == ControlFlow::Wait;
+                    let mut xev = mem::uninitialized();
+                    let mut read = 0;
+                    loop {
+                        // It would be nice to only call this once and then decrement, but that falls apart if the
+                        // queue is read by anyone else:
+                        // https://github.com/glfw/glfw/commit/8d1a64c83180fd8c5e41b5f2af3416d604261383
+                        let pending = (self.xconn.xlib.XPending)(self.xconn.display);
+                        // We can also try `XEventsQueued`, which doesn't flush...
+                        //let pending = (self.xconn.xlib.XEventsQueued)(self.xconn.display, 0);
+                        // Though, we still need to flush at some point, and there don't seem to be performance issues
+                        // at present.
+                        // We stop iteration if *both* of the following conditions are met:
+                        // 1. The event queue is empty
+                        // 2. We're not using `ControlFlow::Wait` OR we've processed at least one event
+                        if pending == 0 && (!wait || read > 0) { break };
+                        (self.xconn.xlib.XNextEvent)(self.xconn.display, &mut xev);
+                        let mut callback = |event| {
+                            // After we decide to exit, don't overwrite the flow anymore.
+                            // In fact, we stop caling the handler when that happens, so there won't be any stragglers!
+                            if control_flow != ControlFlow::Exit {
+                                control_flow = handler.receive(event);
+                                // It's important to remember that the control flow can change at any time.
+                                wait = control_flow == ControlFlow::Wait;
+                            }
+                        };
+                        // It also seeemd nice to try to shove all of the events into a vec and then process after this
+                        // loop, but that caused `MouseWheel` events to be swallowed into the abyss.
+                        self.process_event(&mut xev, &mut callback);
+                        read += 1;
                     }
-                };
-
-                self.process_event(&mut xev, &mut cb);
+                },
+                ControlFlow::WaitTimeout(timeout) => unimplemented!(),
+                ControlFlow::Exit => {
+                    drop(self);
+                    ::std::process::exit(0)
+                },
             }
-
-            if let ControlFlow::Break = control_flow {
-                break;
+            if control_flow != ControlFlow::Exit {
+                control_flow = handler.receive(Event::Idle);
             }
         }
     }
@@ -1174,15 +1178,15 @@ impl EventsLoop {
     }
 }
 
-impl EventsLoopProxy {
-    pub fn wakeup(&self) -> Result<(), EventsLoopClosed> {
-        // Update the `EventsLoop`'s `pending_wakeup` flag.
+impl EventLoopProxy {
+    pub fn wakeup(&self) -> Result<(), EventLoopClosed> {
+        // Update the `EventLoop`'s `pending_wakeup` flag.
         let display = match (self.pending_wakeup.upgrade(), self.xconn.upgrade()) {
             (Some(wakeup), Some(display)) => {
                 wakeup.store(true, atomic::Ordering::Relaxed);
                 display
             },
-            _ => return Err(EventsLoopClosed),
+            _ => return Err(EventLoopClosed),
         };
 
         // Push an event on the X event queue so that methods run_forever will advance.
@@ -1262,7 +1266,7 @@ impl Deref for Window {
 
 impl Window {
     pub fn new(
-        event_loop: &EventsLoop,
+        event_loop: &EventLoop,
         attribs: WindowAttributes,
         pl_attribs: PlatformSpecificWindowBuilderAttributes
     ) -> Result<Self, CreationError> {
@@ -1347,7 +1351,7 @@ enum ScrollOrientation {
 }
 
 impl Device {
-    fn new(el: &EventsLoop, info: &ffi::XIDeviceInfo) -> Self {
+    fn new(el: &EventLoop, info: &ffi::XIDeviceInfo) -> Self {
         let name = unsafe { CStr::from_ptr(info.name).to_string_lossy() };
         let mut scroll_axes = Vec::new();
 

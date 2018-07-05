@@ -26,19 +26,19 @@ use CreationError::OsError;
 use events::{Touch, TouchPhase};
 use window::MonitorId as RootMonitorId;
 
-pub struct EventsLoop {
+pub struct EventLoop {
     event_rx: Receiver<android_glue::Event>,
     suspend_callback: RefCell<Option<Box<Fn(bool) -> ()>>>,
 }
 
 #[derive(Clone)]
-pub struct EventsLoopProxy;
+pub struct EventLoopProxy;
 
-impl EventsLoop {
-    pub fn new() -> EventsLoop {
+impl EventLoop {
+    pub fn new() -> EventLoop {
         let (tx, rx) = channel();
         android_glue::add_sender(tx);
-        EventsLoop {
+        EventLoop {
             event_rx: rx,
             suspend_callback: Default::default(),
         }
@@ -142,26 +142,26 @@ impl EventsLoop {
     {
         // Yeah that's a very bad implementation.
         loop {
-            let mut control_flow = ::ControlFlow::Continue;
+            let mut control_flow = ::ControlFlow::Wait;
             self.poll_events(|e| {
-                if let ::ControlFlow::Break = callback(e) {
-                    control_flow = ::ControlFlow::Break;
+                if let ::ControlFlow::Exit = callback(e) {
+                    control_flow = ::ControlFlow::Exit;
                 }
             });
-            if let ::ControlFlow::Break = control_flow {
+            if let ::ControlFlow::Exit = control_flow {
                 break;
             }
             ::std::thread::sleep(::std::time::Duration::from_millis(5));
         }
     }
 
-    pub fn create_proxy(&self) -> EventsLoopProxy {
-        EventsLoopProxy
+    pub fn create_proxy(&self) -> EventLoopProxy {
+        EventLoopProxy
     }
 }
 
-impl EventsLoopProxy {
-    pub fn wakeup(&self) -> Result<(), ::EventsLoopClosed> {
+impl EventLoopProxy {
+    pub fn wakeup(&self) -> Result<(), ::EventLoopClosed> {
         android_glue::wake_event_loop();
         Ok(())
     }
@@ -236,7 +236,7 @@ pub struct PlatformSpecificWindowBuilderAttributes;
 pub struct PlatformSpecificHeadlessBuilderAttributes;
 
 impl Window {
-    pub fn new(_: &EventsLoop, win_attribs: WindowAttributes,
+    pub fn new(_: &EventLoop, win_attribs: WindowAttributes,
                _: PlatformSpecificWindowBuilderAttributes)
                -> Result<Window, CreationError>
     {

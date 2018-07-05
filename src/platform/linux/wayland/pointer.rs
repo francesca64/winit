@@ -4,7 +4,7 @@ use {ElementState, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent};
 use events::ModifiersState;
 
 use super::DeviceId;
-use super::event_loop::EventsLoopSink;
+use super::event_loop::EventLoopSink;
 use super::window::WindowStore;
 
 use sctk::reexports::client::{NewProxy, Proxy};
@@ -12,7 +12,7 @@ use sctk::reexports::client::protocol::wl_pointer::{self, Event as PtrEvent, WlP
 
 pub fn implement_pointer(
     pointer: NewProxy<WlPointer>,
-    sink: Arc<Mutex<EventsLoopSink>>,
+    sink: Arc<Mutex<EventLoopSink>>,
     store: Arc<Mutex<WindowStore>>,
 ) -> Proxy<WlPointer> {
     let mut mouse_focus = None;

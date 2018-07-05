@@ -2,14 +2,14 @@ use std::sync::{Arc, Mutex};
 
 use {ElementState, KeyboardInput, ModifiersState, VirtualKeyCode, WindowEvent};
 
-use super::{make_wid, DeviceId, EventsLoopSink};
+use super::{make_wid, DeviceId, EventLoopSink};
 use sctk::keyboard::{self, map_keyboard_auto, Event as KbEvent};
 use sctk::reexports::client::{NewProxy, Proxy};
 use sctk::reexports::client::protocol::wl_keyboard;
 
 pub fn init_keyboard(
     keyboard: NewProxy<wl_keyboard::WlKeyboard>,
-    sink: Arc<Mutex<EventsLoopSink>>,
+    sink: Arc<Mutex<EventLoopSink>>,
 ) -> Proxy<wl_keyboard::WlKeyboard> {
     // { variables to be captured by the closure
     let mut target = None;

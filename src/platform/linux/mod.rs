@@ -11,10 +11,10 @@ use sctk::reexports::client::ConnectError;
 
 use {
     CreationError,
-    EventsLoopClosed,
+    EventHandler,
+    EventLoopClosed,
     Icon,
     MouseCursor,
-    ControlFlow,
     WindowAttributes,
 };
 use dpi::{LogicalPosition, LogicalSize, PhysicalPosition, PhysicalSize};
@@ -121,15 +121,15 @@ impl MonitorId {
 impl Window {
     #[inline]
     pub fn new(
-        events_loop: &EventsLoop,
+        events_loop: &EventLoop,
         attribs: WindowAttributes,
         pl_attribs: PlatformSpecificWindowBuilderAttributes,
     ) -> Result<Self, CreationError> {
         match *events_loop {
-            EventsLoop::Wayland(ref events_loop) => {
+            EventLoop::Wayland(ref events_loop) => {
                 wayland::Window::new(events_loop, attribs).map(Window::Wayland)
             },
-            EventsLoop::X(ref events_loop) => {
+            EventLoop::X(ref events_loop) => {
                 x11::Window::new(events_loop, attribs, pl_attribs).map(Window::X)
             },
         }
@@ -388,27 +388,27 @@ unsafe extern "C" fn x_error_callback(
     0
 }
 
-pub enum EventsLoop {
-    Wayland(wayland::EventsLoop),
-    X(x11::EventsLoop)
+pub enum EventLoop {
+    Wayland(wayland::EventLoop),
+    X(x11::EventLoop)
 }
 
 #[derive(Clone)]
-pub enum EventsLoopProxy {
-    X(x11::EventsLoopProxy),
-    Wayland(wayland::EventsLoopProxy),
+pub enum EventLoopProxy {
+    X(x11::EventLoopProxy),
+    Wayland(wayland::EventLoopProxy),
 }
 
-impl EventsLoop {
-    pub fn new() -> EventsLoop {
+impl EventLoop {
+    pub fn new() -> EventLoop {
         if let Ok(env_var) = env::var(BACKEND_PREFERENCE_ENV_VAR) {
             match env_var.as_str() {
                 "x11" => {
                     // TODO: propagate
-                    return EventsLoop::new_x11().expect("Failed to initialize X11 backend");
+                    return EventLoop::new_x11().expect("Failed to initialize X11 backend");
                 },
                 "wayland" => {
-                    return EventsLoop::new_wayland()
+                    return EventLoop::new_wayland()
                         .expect("Failed to initialize Wayland backend");
                 },
                 _ => panic!(
@@ -418,12 +418,12 @@ impl EventsLoop {
             }
         }
 
-        let wayland_err = match EventsLoop::new_wayland() {
+        let wayland_err = match EventLoop::new_wayland() {
             Ok(event_loop) => return event_loop,
             Err(err) => err,
         };
 
-        let x11_err = match EventsLoop::new_x11() {
+        let x11_err = match EventLoop::new_x11() {
             Ok(event_loop) => return event_loop,
             Err(err) => err,
         };
@@ -439,30 +439,30 @@ r#"Failed to initialize any backend!
         panic!(err_string);
     }
 
-    pub fn new_wayland() -> Result<EventsLoop, ConnectError> {
-        wayland::EventsLoop::new()
-            .map(EventsLoop::Wayland)
+    pub fn new_wayland() -> Result<EventLoop, ConnectError> {
+        wayland::EventLoop::new()
+            .map(EventLoop::Wayland)
     }
 
-    pub fn new_x11() -> Result<EventsLoop, XNotSupported> {
+    pub fn new_x11() -> Result<EventLoop, XNotSupported> {
         X11_BACKEND
             .lock()
             .as_ref()
             .map(Arc::clone)
-            .map(x11::EventsLoop::new)
-            .map(EventsLoop::X)
+            .map(x11::EventLoop::new)
+            .map(EventLoop::X)
             .map_err(|err| err.clone())
     }
 
     #[inline]
     pub fn get_available_monitors(&self) -> VecDeque<MonitorId> {
         match *self {
-            EventsLoop::Wayland(ref evlp) => evlp
+            EventLoop::Wayland(ref evlp) => evlp
                 .get_available_monitors()
                 .into_iter()
                 .map(MonitorId::Wayland)
                 .collect(),
-            EventsLoop::X(ref evlp) => evlp
+            EventLoop::X(ref evlp) => evlp
                 .x_connection()
                 .get_available_monitors()
                 .into_iter()
@@ -474,58 +474,47 @@ r#"Failed to initialize any backend!
     #[inline]
     pub fn get_primary_monitor(&self) -> MonitorId {
         match *self {
-            EventsLoop::Wayland(ref evlp) => MonitorId::Wayland(evlp.get_primary_monitor()),
-            EventsLoop::X(ref evlp) => MonitorId::X(evlp.x_connection().get_primary_monitor()),
+            EventLoop::Wayland(ref evlp) => MonitorId::Wayland(evlp.get_primary_monitor()),
+            EventLoop::X(ref evlp) => MonitorId::X(evlp.x_connection().get_primary_monitor()),
         }
     }
 
-    pub fn create_proxy(&self) -> EventsLoopProxy {
+    pub fn create_proxy(&self) -> EventLoopProxy {
         match *self {
-            EventsLoop::Wayland(ref evlp) => EventsLoopProxy::Wayland(evlp.create_proxy()),
-            EventsLoop::X(ref evlp) => EventsLoopProxy::X(evlp.create_proxy()),
+            EventLoop::Wayland(ref evlp) => EventLoopProxy::Wayland(evlp.create_proxy()),
+            EventLoop::X(ref evlp) => EventLoopProxy::X(evlp.create_proxy()),
         }
     }
 
-    pub fn poll_events<F>(&mut self, callback: F)
-        where F: FnMut(::Event)
-    {
+    pub fn run_forever<H: EventHandler>(&mut self, handler: H) -> ! {
         match *self {
-            EventsLoop::Wayland(ref mut evlp) => evlp.poll_events(callback),
-            EventsLoop::X(ref mut evlp) => evlp.poll_events(callback)
-        }
-    }
-
-    pub fn run_forever<F>(&mut self, callback: F)
-        where F: FnMut(::Event) -> ControlFlow
-    {
-        match *self {
-            EventsLoop::Wayland(ref mut evlp) => evlp.run_forever(callback),
-            EventsLoop::X(ref mut evlp) => evlp.run_forever(callback)
+            EventLoop::Wayland(ref mut event_loop) => event_loop.run_forever(handler),
+            EventLoop::X(ref mut event_loop) => event_loop.run_forever(handler),
         }
     }
 
     #[inline]
     pub fn is_wayland(&self) -> bool {
         match *self {
-            EventsLoop::Wayland(_) => true,
-            EventsLoop::X(_) => false,
+            EventLoop::Wayland(_) => true,
+            EventLoop::X(_) => false,
         }
     }
 
     #[inline]
     pub fn x_connection(&self) -> Option<&Arc<XConnection>> {
         match *self {
-            EventsLoop::Wayland(_) => None,
-            EventsLoop::X(ref ev) => Some(ev.x_connection()),
+            EventLoop::Wayland(_) => None,
+            EventLoop::X(ref ev) => Some(ev.x_connection()),
         }
     }
 }
 
-impl EventsLoopProxy {
-    pub fn wakeup(&self) -> Result<(), EventsLoopClosed> {
+impl EventLoopProxy {
+    pub fn wakeup(&self) -> Result<(), EventLoopClosed> {
         match *self {
-            EventsLoopProxy::Wayland(ref proxy) => proxy.wakeup(),
-            EventsLoopProxy::X(ref proxy) => proxy.wakeup(),
+            EventLoopProxy::Wayland(ref proxy) => proxy.wakeup(),
+            EventLoopProxy::X(ref proxy) => proxy.wakeup(),
         }
     }
 }

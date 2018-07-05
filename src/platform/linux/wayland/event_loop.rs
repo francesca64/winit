@@ -4,7 +4,7 @@ use std::fmt;
 use std::sync::{Arc, Mutex, Weak};
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use {ControlFlow, EventsLoopClosed, PhysicalPosition, PhysicalSize};
+use {ControlFlow, EventHandler, EventLoopClosed, PhysicalPosition, PhysicalSize};
 
 use super::WindowId;
 use super::window::WindowStore;
@@ -18,13 +18,13 @@ use sctk::reexports::client::protocol::{wl_keyboard, wl_output, wl_pointer, wl_r
 
 use sctk::reexports::client::protocol::wl_display::RequestsTrait as DisplayRequests;
 
-pub struct EventsLoopSink {
+pub struct EventLoopSink {
     buffer: VecDeque<::Event>,
 }
 
-impl EventsLoopSink {
-    pub fn new() -> EventsLoopSink {
-        EventsLoopSink {
+impl EventLoopSink {
+    pub fn new() -> EventLoopSink {
+        EventLoopSink {
             buffer: VecDeque::new(),
         }
     }
@@ -51,11 +51,11 @@ impl EventsLoopSink {
     }
 }
 
-pub struct EventsLoop {
+pub struct EventLoop {
     // The Event Queue
     pub evq: RefCell<EventQueue>,
     // our sink, shared with some handlers, buffering the events
-    sink: Arc<Mutex<EventsLoopSink>>,
+    sink: Arc<Mutex<EventLoopSink>>,
     // Whether or not there is a pending `Awakened` event to be emitted.
     pending_wakeup: Arc<AtomicBool>,
     // The window store
@@ -70,41 +70,41 @@ pub struct EventsLoop {
     pub seats: Arc<Mutex<Vec<(u32, Proxy<wl_seat::WlSeat>)>>>,
 }
 
-// A handle that can be sent across threads and used to wake up the `EventsLoop`.
+// A handle that can be sent across threads and used to wake up the `EventLoop`.
 //
-// We should only try and wake up the `EventsLoop` if it still exists, so we hold Weak ptrs.
+// We should only try and wake up the `EventLoop` if it still exists, so we hold Weak ptrs.
 #[derive(Clone)]
-pub struct EventsLoopProxy {
+pub struct EventLoopProxy {
     display: Weak<Display>,
     pending_wakeup: Weak<AtomicBool>,
 }
 
-impl EventsLoopProxy {
-    // Causes the `EventsLoop` to stop blocking on `run_forever` and emit an `Awakened` event.
+impl EventLoopProxy {
+    // Causes the `EventLoop` to stop blocking on `run_forever` and emit an `Awakened` event.
     //
-    // Returns `Err` if the associated `EventsLoop` no longer exists.
-    pub fn wakeup(&self) -> Result<(), EventsLoopClosed> {
+    // Returns `Err` if the associated `EventLoop` no longer exists.
+    pub fn wakeup(&self) -> Result<(), EventLoopClosed> {
         let display = self.display.upgrade();
         let wakeup = self.pending_wakeup.upgrade();
         match (display, wakeup) {
             (Some(display), Some(wakeup)) => {
-                // Update the `EventsLoop`'s `pending_wakeup` flag.
+                // Update the `EventLoop`'s `pending_wakeup` flag.
                 wakeup.store(true, Ordering::Relaxed);
-                // Cause the `EventsLoop` to break from `dispatch` if it is currently blocked.
+                // Cause the `EventLoop` to break from `dispatch` if it is currently blocked.
                 let _ = display.sync();
-                display.flush().map_err(|_| EventsLoopClosed)?;
+                display.flush().map_err(|_| EventLoopClosed)?;
                 Ok(())
             }
-            _ => Err(EventsLoopClosed),
+            _ => Err(EventLoopClosed),
         }
     }
 }
 
-impl EventsLoop {
-    pub fn new() -> Result<EventsLoop, ConnectError> {
+impl EventLoop {
+    pub fn new() -> Result<EventLoop, ConnectError> {
         let (display, mut event_queue) = Display::connect_to_env()?;
 
-        let sink = Arc::new(Mutex::new(EventsLoopSink::new()));
+        let sink = Arc::new(Mutex::new(EventLoopSink::new()));
         let store = Arc::new(Mutex::new(WindowStore::new()));
         let seats = Arc::new(Mutex::new(Vec::new()));
 
@@ -118,7 +118,7 @@ impl EventsLoop {
             },
         ).unwrap();
 
-        Ok(EventsLoop {
+        Ok(EventLoop {
             display: Arc::new(display),
             evq: RefCell::new(event_queue),
             sink: sink,
@@ -130,14 +130,14 @@ impl EventsLoop {
         })
     }
 
-    pub fn create_proxy(&self) -> EventsLoopProxy {
-        EventsLoopProxy {
+    pub fn create_proxy(&self) -> EventLoopProxy {
+        EventLoopProxy {
             display: Arc::downgrade(&self.display),
             pending_wakeup: Arc::downgrade(&self.pending_wakeup),
         }
     }
 
-    pub fn poll_events<F>(&mut self, mut callback: F)
+    /*pub fn poll_events<F>(&mut self, mut callback: F)
     where
         F: FnMut(::Event),
     {
@@ -160,20 +160,17 @@ impl EventsLoop {
 
         // dispatch buffered events to client
         self.sink.lock().unwrap().empty_with(&mut callback);
-    }
+    }*/
 
-    pub fn run_forever<F>(&mut self, mut callback: F)
-    where
-        F: FnMut(::Event) -> ControlFlow,
-    {
+    pub fn run_forever<H: EventHandler>(&mut self, mut handler: H) -> ! {
         // send pending events to the server
         self.display.flush().expect("Wayland connection lost.");
 
         // Check for control flow by wrapping the callback.
-        let control_flow = ::std::cell::Cell::new(ControlFlow::Continue);
+        let control_flow = ::std::cell::Cell::new(ControlFlow::Wait);
         let mut callback = |event| {
-            if let ControlFlow::Break = callback(event) {
-                control_flow.set(ControlFlow::Break);
+            if let ControlFlow::Exit = handler.receive(event) {
+                control_flow.set(ControlFlow::Exit);
             }
         };
 
@@ -192,8 +189,9 @@ impl EventsLoop {
             // empty buffer of events
             self.sink.lock().unwrap().empty_with(&mut callback);
 
-            if let ControlFlow::Break = control_flow.get() {
-                break;
+            if let ControlFlow::Exit = control_flow.get() {
+                drop(self);
+                ::std::process::exit(0)
             }
         }
     }
@@ -208,10 +206,10 @@ impl EventsLoop {
 }
 
 /*
- * Private EventsLoop Internals
+ * Private EventLoop Internals
  */
 
-impl EventsLoop {
+impl EventLoop {
     fn post_dispatch_triggers(&mut self) {
         let mut sink = self.sink.lock().unwrap();
         // process a possible pending wakeup call
@@ -263,7 +261,7 @@ impl EventsLoop {
  */
 
 struct SeatManager {
-    sink: Arc<Mutex<EventsLoopSink>>,
+    sink: Arc<Mutex<EventLoopSink>>,
     store: Arc<Mutex<WindowStore>>,
     seats: Arc<Mutex<Vec<(u32, Proxy<wl_seat::WlSeat>)>>>,
 }
@@ -308,7 +306,7 @@ impl Implementation<Proxy<wl_registry::WlRegistry>, GlobalEvent> for SeatManager
 }
 
 struct SeatData {
-    sink: Arc<Mutex<EventsLoopSink>>,
+    sink: Arc<Mutex<EventLoopSink>>,
     store: Arc<Mutex<WindowStore>>,
     pointer: Option<Proxy<wl_pointer::WlPointer>>,
     keyboard: Option<Proxy<wl_keyboard::WlKeyboard>>,

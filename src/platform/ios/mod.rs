@@ -198,15 +198,15 @@ impl MonitorId {
     }
 }
 
-pub struct EventsLoop {
+pub struct EventLoop {
     delegate_state: *mut DelegateState,
 }
 
 #[derive(Clone)]
-pub struct EventsLoopProxy;
+pub struct EventLoopProxy;
 
-impl EventsLoop {
-    pub fn new() -> EventsLoop {
+impl EventLoop {
+    pub fn new() -> EventLoop {
         unsafe {
             if setjmp(mem::transmute(&mut JMPBUF)) != 0 {
                 let app_class = Class::get("UIApplication").expect("Failed to get class `UIApplication`");
@@ -214,7 +214,7 @@ impl EventsLoop {
                 let delegate: id = msg_send![app, delegate];
                 let state: *mut c_void = *(&*delegate).get_ivar("winitState");
                 let delegate_state = state as *mut DelegateState;
-                return EventsLoop { delegate_state };
+                return EventLoop { delegate_state };
             }
         }
 
@@ -271,26 +271,26 @@ impl EventsLoop {
     {
         // Yeah that's a very bad implementation.
         loop {
-            let mut control_flow = ::ControlFlow::Continue;
+            let mut control_flow = ::ControlFlow::Wait;
             self.poll_events(|e| {
-                if let ::ControlFlow::Break = callback(e) {
-                    control_flow = ::ControlFlow::Break;
+                if let ::ControlFlow::Exit = callback(e) {
+                    control_flow = ::ControlFlow::Exit;
                 }
             });
-            if let ::ControlFlow::Break = control_flow {
+            if let ::ControlFlow::Exit = control_flow {
                 break;
             }
             ::std::thread::sleep(::std::time::Duration::from_millis(5));
         }
     }
 
-    pub fn create_proxy(&self) -> EventsLoopProxy {
-        EventsLoopProxy
+    pub fn create_proxy(&self) -> EventLoopProxy {
+        EventLoopProxy
     }
 }
 
-impl EventsLoopProxy {
-    pub fn wakeup(&self) -> Result<(), ::EventsLoopClosed> {
+impl EventLoopProxy {
+    pub fn wakeup(&self) -> Result<(), ::EventLoopClosed> {
         unimplemented!()
     }
 }
@@ -308,7 +308,7 @@ pub struct PlatformSpecificWindowBuilderAttributes;
 // so to be consistent with other platforms we have to change that.
 impl Window {
     pub fn new(
-        ev: &EventsLoop,
+        ev: &EventLoop,
         _attributes: WindowAttributes,
         _pl_alltributes: PlatformSpecificWindowBuilderAttributes,
     ) -> Result<Window, CreationError> {

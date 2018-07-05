@@ -1,4 +1,4 @@
-use {ControlFlow, EventsLoopClosed};
+use {ControlFlow, EventLoopClosed};
 use cocoa::{self, appkit, foundation};
 use cocoa::appkit::{NSApplication, NSEvent, NSEventMask, NSEventModifierFlags, NSEventPhase, NSView, NSWindow};
 use events::{self, ElementState, Event, TouchPhase, WindowEvent, DeviceEvent, ModifiersState, KeyboardInput};
@@ -9,12 +9,12 @@ use std;
 use std::os::raw::*;
 use super::DeviceId;
 
-pub struct EventsLoop {
+pub struct EventLoop {
     modifiers: Modifiers,
     pub shared: Arc<Shared>,
 }
 
-// State shared between the `EventsLoop` and its registered windows.
+// State shared between the `EventLoop` and its registered windows.
 pub struct Shared {
     pub windows: Mutex<Vec<Weak<Window2>>>,
     pub pending_events: Mutex<VecDeque<Event>>,
@@ -42,7 +42,7 @@ struct Modifiers {
 // Wrapping the user callback in a type allows us to:
 //
 // - ensure the callback pointer is never accidentally cloned
-// - ensure that only the `EventsLoop` can `store` and `drop` the callback pointer
+// - ensure that only the `EventLoop` can `store` and `drop` the callback pointer
 // - Share access to the user callback with the NSWindow callbacks.
 pub struct UserCallback {
     mutex: Mutex<Option<*mut FnMut(Event)>>,
@@ -160,17 +160,17 @@ impl UserCallback {
 }
 
 
-impl EventsLoop {
+impl EventLoop {
 
     pub fn new() -> Self {
         // Mark this thread as the main thread of the Cocoa event system.
         //
         // This must be done before any worker threads get a chance to call it
-        // (e.g., via `EventsLoopProxy::wakeup()`), causing a wrong thread to be
+        // (e.g., via `EventLoopProxy::wakeup()`), causing a wrong thread to be
         // marked as the main thread.
         unsafe { appkit::NSApp(); }
 
-        EventsLoop {
+        EventLoop {
             shared: Arc::new(Shared::new()),
             modifiers: Modifiers::new(),
         }
@@ -227,11 +227,11 @@ impl EventsLoop {
         }
 
         // Track whether or not control flow has changed.
-        let control_flow = std::cell::Cell::new(ControlFlow::Continue);
+        let control_flow = std::cell::Cell::new(ControlFlow::Wait);
 
         let mut callback = |event| {
-            if let ControlFlow::Break = callback(event) {
-                control_flow.set(ControlFlow::Break);
+            if let ControlFlow::Exit = callback(event) {
+                control_flow.set(ControlFlow::Exit);
             }
         };
 
@@ -241,7 +241,7 @@ impl EventsLoop {
             unsafe {
                 // First, yield all pending events.
                 self.shared.call_user_callback_with_pending_events();
-                if let ControlFlow::Break = control_flow.get() {
+                if let ControlFlow::Exit = control_flow.get() {
                     break;
                 }
 
@@ -262,7 +262,7 @@ impl EventsLoop {
 
                 if let Some(event) = maybe_event {
                     self.shared.user_callback.call_with_event(event);
-                    if let ControlFlow::Break = control_flow.get() {
+                    if let ControlFlow::Exit = control_flow.get() {
                         break;
                     }
                 }
@@ -500,7 +500,7 @@ impl EventsLoop {
 }
 
 impl Proxy {
-    pub fn wakeup(&self) -> Result<(), EventsLoopClosed> {
+    pub fn wakeup(&self) -> Result<(), EventLoopClosed> {
         // Awaken the event loop by triggering `NSApplicationActivatedEventType`.
         unsafe {
             let pool = foundation::NSAutoreleasePool::new(cocoa::base::nil);

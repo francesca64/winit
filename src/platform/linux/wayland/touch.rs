@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 use {TouchPhase, WindowEvent};
 
 use super::{DeviceId, WindowId};
-use super::event_loop::EventsLoopSink;
+use super::event_loop::EventLoopSink;
 use super::window::WindowStore;
 
 use sctk::reexports::client::{NewProxy, Proxy};
@@ -17,7 +17,7 @@ struct TouchPoint {
 
 pub(crate) fn implement_touch(
     touch: NewProxy<WlTouch>,
-    sink: Arc<Mutex<EventsLoopSink>>,
+    sink: Arc<Mutex<EventLoopSink>>,
     store: Arc<Mutex<WindowStore>>,
 ) -> Proxy<WlTouch> {
     let mut pending_ids = Vec::new();

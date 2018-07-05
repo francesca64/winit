@@ -56,7 +56,7 @@ pub fn keysym_to_element(keysym: libc::c_uint) -> Option<VirtualKeyCode> {
         //ffi::XK_Find => events::VirtualKeyCode::Find,
         //ffi::XK_Cancel => events::VirtualKeyCode::Cancel,
         //ffi::XK_Help => events::VirtualKeyCode::Help,
-        //ffi::XK_Break => events::VirtualKeyCode::Break,
+        //ffi::XK_Break => events::VirtualKeyCode::Exit,
         //ffi::XK_Mode_switch => events::VirtualKeyCode::Mode_switch,
         //ffi::XK_script_switch => events::VirtualKeyCode::Script_switch,
         //ffi::XK_Num_Lock => events::VirtualKeyCode::Num_lock,
