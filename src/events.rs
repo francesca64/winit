@@ -13,7 +13,10 @@ pub enum Event {
         device_id: DeviceId,
         event: DeviceEvent,
     },
-    Idle,
+    /// Sent at the beginning of every `run` loop iteration.
+    LoopStart,
+    /// Sent at the end of every `run` loop iteration.
+    LoopEnd,
     Awakened,
     /// The application has been suspended or resumed.
     ///
@@ -30,10 +33,26 @@ pub enum WindowEvent {
     /// The position of the window has changed. Contains the window's new position.
     Moved(LogicalPosition),
 
-    /// The window has been requested to close.
+    /// The window has been requested to close. Most commonly, this occurs when the cute little x button on the window
+    /// is pressed.
+    ///
+    /// You are free to do whatever you want with this event, including nothing! Though, your users likely won't like
+    /// you very much if you create windows that are impossible to close. The idiomatic way to close the window is by
+    /// dropping it. For an extensive example, see
+    /// [`examples/handling_close.rs`](https://github.com/tomaka/winit/blob/v0.17.0/examples/handling_close.rs).
     CloseRequested,
 
     /// The window has been destroyed.
+    ///
+    /// Do not attempt to use the window after this event has been received. Attempting to do so is undefined
+    /// behavior.
+    ///
+    /// Normally, you'll only receive this event after dropping the `Window`, negating the aforementioned issue.
+    /// However, it's *ostensibly* possible for the window to be closed by other means (though *very* unlikely). iOS is
+    /// the notable exception, where this event is generated under normal circumstances; whenever your app is in the
+    /// background, it may be killed to conserve memory.
+    ///
+    /// A strictly correct program must handle this event accordingly, though outside of iOS it's not a serious issue.
     Destroyed,
 
     /// A file has been dropped into the window.

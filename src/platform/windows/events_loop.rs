@@ -8,7 +8,7 @@
 //! to create a window.
 //!
 //! If you create a window whose class is set to `callback`, the window's events will be
-//! propagated with `run_forever` and `poll_events`.
+//! propagated with `run` and `poll_events`.
 //! The closure passed to the `execute_in_thread` method takes an `Inserter` that you can use to
 //! add a `WindowState` entry to a list of window to be used by the callback.
 
@@ -239,7 +239,7 @@ impl EventLoop {
         }
     }
 
-    pub fn run_forever<F>(&mut self, mut callback: F)
+    pub fn run<F>(&mut self, mut callback: F)
         where F: FnMut(Event) -> ControlFlow
     {
         loop {

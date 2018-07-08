@@ -21,17 +21,17 @@ fn main() {
     // feature enabled).
     let icon = Icon::from_path(path).expect("Failed to open icon");
 
-    let mut events_loop = winit::EventLoop::new();
+    let mut event_loop = winit::EventLoop::new();
 
     let window = winit::WindowBuilder::new()
         .with_title("An iconic window!")
         // At present, this only does anything on Windows and X11, so if you want to save load
         // time, you can put icon loading behind a function that returns `None` on other platforms.
         .with_window_icon(Some(icon))
-        .build(&events_loop)
+        .build(&event_loop)
         .unwrap();
 
-    events_loop.run_forever(|event| {
+    event_loop.run(move |event| {
         if let winit::Event::WindowEvent { event, .. } = event {
             use winit::WindowEvent::*;
             match event {

@@ -13,7 +13,7 @@ pub trait EventLoopExt {
 
 impl EventLoopExt for EventLoop {
     fn set_suspend_callback(&self, cb: Option<Box<Fn(bool) -> ()>>) {
-        self.events_loop.set_suspend_callback(cb);
+        self.event_loop.set_suspend_callback(cb);
     }
 }
 

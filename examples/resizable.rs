@@ -1,7 +1,7 @@
 extern crate winit;
 
 fn main() {
-    let mut events_loop = winit::EventLoop::new();
+    let mut event_loop = winit::EventLoop::new();
 
     let mut resizable = false;
 
@@ -9,10 +9,10 @@ fn main() {
         .with_title("Hit space to toggle resizability.")
         .with_dimensions((400, 200).into())
         .with_resizable(resizable)
-        .build(&events_loop)
+        .build(&event_loop)
         .unwrap();
 
-    events_loop.run_forever(|event| {
+    event_loop.run(move |event| {
         match event {
             winit::Event::WindowEvent { event, .. } => match event {
                 winit::WindowEvent::CloseRequested => return winit::ControlFlow::Exit,

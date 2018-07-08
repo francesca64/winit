@@ -80,7 +80,7 @@ pub struct EventLoopProxy {
 }
 
 impl EventLoopProxy {
-    // Causes the `EventLoop` to stop blocking on `run_forever` and emit an `Awakened` event.
+    // Causes the `EventLoop` to stop blocking on `run` and emit an `Awakened` event.
     //
     // Returns `Err` if the associated `EventLoop` no longer exists.
     pub fn wakeup(&self) -> Result<(), EventLoopClosed> {
@@ -162,7 +162,7 @@ impl EventLoop {
         self.sink.lock().unwrap().empty_with(&mut callback);
     }*/
 
-    pub fn run_forever<H: EventHandler>(&mut self, mut handler: H) -> ! {
+    pub fn run<H: EventHandler>(&mut self, mut handler: H) -> ! {
         // send pending events to the server
         self.display.flush().expect("Wayland connection lost.");
 

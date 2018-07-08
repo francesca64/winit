@@ -186,9 +186,12 @@ impl EventLoop {
         }
     }
 
-    pub fn run_forever<H: EventHandler>(&mut self, mut handler: H) -> ! {
-        let mut control_flow = ControlFlow::Poll;
+    pub fn run<H: EventHandler>(&mut self, mut handler: H) -> ! {
+        let mut control_flow = Default::default();
         loop {
+            if control_flow != ControlFlow::Exit {
+                control_flow = handler.receive(Event::LoopStart);
+            }
             match control_flow {
                 ControlFlow::Poll | ControlFlow::Wait => unsafe {
                     let mut wait = control_flow == ControlFlow::Wait;
@@ -230,7 +233,7 @@ impl EventLoop {
                 },
             }
             if control_flow != ControlFlow::Exit {
-                control_flow = handler.receive(Event::Idle);
+                control_flow = handler.receive(Event::LoopEnd);
             }
         }
     }
@@ -1189,7 +1192,7 @@ impl EventLoopProxy {
             _ => return Err(EventLoopClosed),
         };
 
-        // Push an event on the X event queue so that methods run_forever will advance.
+        // Push an event on the X event queue so that methods run will advance.
         //
         // NOTE: This design is taken from the old `WindowProxy::wakeup` implementation. It
         // assumes that X11 is thread safe. Is this true?

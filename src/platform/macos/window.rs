@@ -38,7 +38,7 @@ use {
 use CreationError::OsError;
 use os::macos::{ActivationPolicy, WindowExt};
 use platform::platform::{ffi, util};
-use platform::platform::events_loop::{EventLoop, Shared};
+use platform::platform::event_loop::{EventLoop, Shared};
 use platform::platform::view::{new_view, set_ime_spot};
 use window::MonitorId as RootMonitorId;
 

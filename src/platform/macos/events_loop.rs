@@ -18,11 +18,11 @@ pub struct EventLoop {
 pub struct Shared {
     pub windows: Mutex<Vec<Weak<Window2>>>,
     pub pending_events: Mutex<VecDeque<Event>>,
-    // The user event callback given via either of the `poll_events` or `run_forever` methods.
+    // The user event callback given via either of the `poll_events` or `run` methods.
     //
     // We store the user's callback here so that it may be accessed by each of the window delegate
     // callbacks (e.g. resize, close, etc) for the duration of a call to either of the
-    // `poll_events` or `run_forever` methods.
+    // `poll_events` or `run` methods.
     //
     // This is *only* `Some` for the duration of a call to either of these methods and will be
     // `None` otherwise.
@@ -121,7 +121,7 @@ impl UserCallback {
     //
     // In order to make sure that the pointer is always valid, we must manually guarantee that it
     // is dropped before the callback itself is dropped. Thus, this should *only* be called at the
-    // beginning of a call to `poll_events` and `run_forever`, both of which *must* drop the
+    // beginning of a call to `poll_events` and `run`, both of which *must* drop the
     // callback at the end of their scope using the `drop` method.
     fn store<F>(&self, callback: &mut F)
         where F: FnMut(Event)
@@ -150,9 +150,9 @@ impl UserCallback {
         *self.mutex.lock().unwrap() = Some(callback);
     }
 
-    // Used to drop the user callback pointer at the end of the `poll_events` and `run_forever`
+    // Used to drop the user callback pointer at the end of the `poll_events` and `run`
     // methods. This is done to enforce our guarantee that the top callback will never live longer
-    // than the call to either `poll_events` or `run_forever` to which it was given.
+    // than the call to either `poll_events` or `run` to which it was given.
     fn drop(&self) {
         self.mutex.lock().unwrap().take();
     }
@@ -217,7 +217,7 @@ impl EventLoop {
         self.shared.user_callback.drop();
     }
 
-    pub fn run_forever<F>(&mut self, mut callback: F)
+    pub fn run<F>(&mut self, mut callback: F)
         where F: FnMut(Event) -> ControlFlow
     {
         unsafe {
@@ -257,7 +257,7 @@ impl EventLoop {
                 let maybe_event = self.ns_event_to_event(ns_event);
 
                 // Release the pool before calling the top callback in case the user calls either
-                // `run_forever` or `poll_events` within the callback.
+                // `run` or `poll_events` within the callback.
                 let _: () = msg_send![pool, release];
 
                 if let Some(event) = maybe_event {

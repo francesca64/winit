@@ -121,16 +121,16 @@ impl MonitorId {
 impl Window {
     #[inline]
     pub fn new(
-        events_loop: &EventLoop,
+        event_loop: &EventLoop,
         attribs: WindowAttributes,
         pl_attribs: PlatformSpecificWindowBuilderAttributes,
     ) -> Result<Self, CreationError> {
-        match *events_loop {
-            EventLoop::Wayland(ref events_loop) => {
-                wayland::Window::new(events_loop, attribs).map(Window::Wayland)
+        match *event_loop {
+            EventLoop::Wayland(ref event_loop) => {
+                wayland::Window::new(event_loop, attribs).map(Window::Wayland)
             },
-            EventLoop::X(ref events_loop) => {
-                x11::Window::new(events_loop, attribs, pl_attribs).map(Window::X)
+            EventLoop::X(ref event_loop) => {
+                x11::Window::new(event_loop, attribs, pl_attribs).map(Window::X)
             },
         }
     }
@@ -486,10 +486,10 @@ r#"Failed to initialize any backend!
         }
     }
 
-    pub fn run_forever<H: EventHandler>(&mut self, handler: H) -> ! {
+    pub fn run<H: EventHandler>(&mut self, handler: H) -> ! {
         match *self {
-            EventLoop::Wayland(ref mut event_loop) => event_loop.run_forever(handler),
-            EventLoop::X(ref mut event_loop) => event_loop.run_forever(handler),
+            EventLoop::Wayland(ref mut event_loop) => event_loop.run(handler),
+            EventLoop::X(ref mut event_loop) => event_loop.run(handler),
         }
     }
 

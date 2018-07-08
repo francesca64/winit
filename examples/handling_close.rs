@@ -1,16 +1,16 @@
 extern crate winit;
 
 fn main() {
-    let mut events_loop = winit::EventLoop::new();
+    let mut event_loop = winit::EventLoop::new();
 
     let _window = winit::WindowBuilder::new()
         .with_title("Your faithful window")
-        .build(&events_loop)
+        .build(&event_loop)
         .unwrap();
 
     let mut close_requested = false;
 
-    events_loop.run_forever(|event| {
+    event_loop.run(move |event| {
         use winit::WindowEvent::*;
         use winit::ElementState::Released;
         use winit::VirtualKeyCode::{N, Y};

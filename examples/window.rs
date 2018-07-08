@@ -8,7 +8,7 @@ fn main() {
         .build(&event_loop)
         .unwrap();
 
-    event_loop.run_forever(|event| {
+    event_loop.run(move |event| {
         println!("{:?}", event);
 
         match event {

@@ -3,15 +3,15 @@ extern crate winit;
 use std::collections::HashMap;
 
 fn main() {
-    let mut events_loop = winit::EventLoop::new();
+    let mut event_loop = winit::EventLoop::new();
 
     let mut windows = HashMap::new();
     for _ in 0..3 {
-        let window = winit::Window::new(&events_loop).unwrap();
+        let window = winit::Window::new(&event_loop).unwrap();
         windows.insert(window.id(), window);
     }
 
-    events_loop.run_forever(|event| {
+    event_loop.run(move |event| {
         match event {
             winit::Event::WindowEvent {
                 event: winit::WindowEvent::CloseRequested,

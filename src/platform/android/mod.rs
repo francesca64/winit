@@ -137,7 +137,7 @@ impl EventLoop {
         *self.suspend_callback.borrow_mut() = cb;
     }
 
-    pub fn run_forever<F>(&mut self, mut callback: F)
+    pub fn run<F>(&mut self, mut callback: F)
         where F: FnMut(::Event) -> ::ControlFlow,
     {
         // Yeah that's a very bad implementation.
