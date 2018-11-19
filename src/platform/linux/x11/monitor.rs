@@ -21,6 +21,15 @@ const DISABLE_MONITOR_LIST_CACHING: bool = false;
 lazy_static! {
     static ref XRANDR_VERSION: Mutex<Option<(c_int, c_int)>> = Mutex::default();
     static ref MONITORS: Mutex<Option<Vec<MonitorId>>> = Mutex::default();
+    static ref DUMMY_MONITOR: MonitorId = MonitorId {
+        id: 0,
+        name: "Totally Real Monitor".to_string(),
+        dimensions: (1280, 720),
+        position: (0, 0),
+        primary: true,
+        hidpi_factor: 1.0,
+        rect: util::AaRect::new((0, 0), (1280, 720)),
+    };
 }
 
 fn version_is_at_least(major: c_int, minor: c_int) -> bool {
@@ -129,7 +138,8 @@ impl XConnection {
     }
 
     fn query_monitor_list(&self) -> Vec<MonitorId> {
-        unsafe {
+        vec![DUMMY_MONITOR.clone()]
+        /*unsafe {
             let root = (self.xlib.XDefaultRootWindow)(self.display);
             // WARNING: this function is supposedly very slow, on the order of hundreds of ms.
             // Upon failure, `resources` will be null.
@@ -198,7 +208,7 @@ impl XConnection {
 
             (self.xrandr.XRRFreeScreenResources)(resources);
             available
-        }
+        }*/
     }
 
     pub fn get_available_monitors(&self) -> Vec<MonitorId> {
