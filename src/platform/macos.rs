@@ -1,7 +1,8 @@
 #![cfg(target_os = "macos")]
 
 use std::os::raw::c_void;
-use {LogicalSize, MonitorHandle, Window, WindowBuilder};
+
+use {dpi::LogicalSize, monitor::MonitorHandle, window::{Window, WindowBuilder}};
 
 /// Additional methods on `Window` that are specific to MacOS.
 pub trait WindowExtMacOS {

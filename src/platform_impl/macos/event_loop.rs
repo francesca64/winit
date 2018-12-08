@@ -1,37 +1,28 @@
-use {ControlFlow, EventLoopClosed};
-use cocoa::{self, appkit, foundation};
-use cocoa::appkit::{NSApplication, NSEvent, NSEventMask, NSEventModifierFlags, NSEventPhase, NSView, NSWindow};
-use events::{self, ElementState, Event, TouchPhase, WindowEvent, DeviceEvent, ModifiersState, KeyboardInput};
-use std::collections::VecDeque;
-use std::sync::{Arc, Mutex, Weak};
-use super::window::Window2;
-use std;
-use std::os::raw::*;
-use super::DeviceId;
+use std::{
+    cell::Cell, collections::VecDeque, hint::unreachable_unchecked,
+    marker::PhantomData, os::raw::*, sync::{Arc, Mutex, Weak},
+};
 
-pub struct EventLoop {
-    modifiers: Modifiers,
-    pub shared: Arc<Shared>,
-}
+use cocoa::{
+    appkit::{
+        self, NSApp, NSApplication, NSApplicationDefined, NSEvent, NSEventMask,
+        NSEventModifierFlags, NSEventPhase, NSEventSubtype, NSView, NSWindow,
+    },
+    base::{BOOL, id, nil, NO, YES},
+    foundation::{NSAutoreleasePool, NSDate, NSDefaultRunLoopMode, NSPoint, NSRect, NSSize},
+};
 
-// State shared between the `EventLoop` and its registered windows.
-pub struct Shared {
-    pub windows: Mutex<Vec<Weak<Window2>>>,
-    pub pending_events: Mutex<VecDeque<Event>>,
-    // The user event callback given via either of the `poll_events` or `run_forever` methods.
-    //
-    // We store the user's callback here so that it may be accessed by each of the window delegate
-    // callbacks (e.g. resize, close, etc) for the duration of a call to either of the
-    // `poll_events` or `run_forever` methods.
-    //
-    // This is *only* `Some` for the duration of a call to either of these methods and will be
-    // `None` otherwise.
-    user_callback: UserCallback,
-}
+use {
+    event::{
+        self, DeviceEvent, ElementState, Event, KeyboardInput,
+        ModifiersState, TouchPhase, WindowEvent,
+    },
+    event_loop::{ControlFlow, EventLoopClosed},
+    window,
+};
+use super::{DeviceId, window::UnownedWindow};
 
-#[derive(Clone)]
-pub struct Proxy {}
-
+#[derive(Default)]
 struct Modifiers {
     shift_pressed: bool,
     ctrl_pressed: bool,
@@ -39,145 +30,81 @@ struct Modifiers {
     alt_pressed: bool,
 }
 
-// Wrapping the user callback in a type allows us to:
-//
-// - ensure the callback pointer is never accidentally cloned
-// - ensure that only the `EventLoop` can `store` and `drop` the callback pointer
-// - Share access to the user callback with the NSWindow callbacks.
-pub struct UserCallback {
-    mutex: Mutex<Option<*mut FnMut(Event)>>,
+// Change to `!` once stable
+enum Never {}
+
+// State shared between the `EventLoop` and its registered windows and delegates.
+#[derive(Default)]
+pub struct PendingEvents {
+    inner: VecDeque<Event<Never>>,
 }
 
-
-impl Shared {
-
-    pub fn new() -> Self {
-        Shared {
-            windows: Mutex::new(Vec::new()),
-            pending_events: Mutex::new(VecDeque::new()),
-            user_callback: UserCallback { mutex: Mutex::new(None) },
-        }
+impl PendingEvents {
+    pub fn queue_event(&mut self, event: Event<Never>) {
+        self.inner.push_back(event);
     }
 
-    fn call_user_callback_with_pending_events(&self) {
-        loop {
-            let event = match self.pending_events.lock().unwrap().pop_front() {
-                Some(event) => event,
-                None => return,
-            };
-            unsafe {
-                self.user_callback.call_with_event(event);
-            }
+    fn process_events<F: FnMut(Event<T>), T: 'static>(&mut self, callback: F) {
+        for event in self.inner.drain(0..) {
+            let event = event
+                .map_nonuser_event()
+                // `Never` can't be constructed, so the `UserEvent` variant can't
+                // be present here.
+                .unwrap_or_else(|_| unsafe { unreachable_unchecked() });
+            callback(event);
         }
     }
+}
 
-    // Calls the user callback if one exists.
-    //
-    // Otherwise, stores the event in the `pending_events` queue.
-    //
-    // This is necessary for the case when `WindowDelegate` callbacks are triggered during a call
-    // to the user's callback.
-    pub fn call_user_callback_with_event_or_store_in_pending(&self, event: Event) {
-        if self.user_callback.mutex.lock().unwrap().is_some() {
-            unsafe {
-                self.user_callback.call_with_event(event);
-            }
-        } else {
-            self.pending_events.lock().unwrap().push_back(event);
-        }
+#[derive(Default)]
+pub struct WindowList {
+    windows: Vec<Weak<UnownedWindow>>,
+}
+
+impl WindowList {
+    pub fn insert_window(&mut self, window: Weak<UnownedWindow>) {
+        self.windows.push(window);
     }
 
     // Removes the window with the given `Id` from the `windows` list.
     //
     // This is called in response to `windowWillClose`.
-    pub fn find_and_remove_window(&self, id: super::window::Id) {
-        if let Ok(mut windows) = self.windows.lock() {
-            windows.retain(|w| match w.upgrade() {
-                Some(w) => w.id() != id,
-                None => false,
-            });
-        }
-    }
-
-}
-
-
-impl Modifiers {
-    pub fn new() -> Self {
-        Modifiers {
-            shift_pressed: false,
-            ctrl_pressed: false,
-            win_pressed: false,
-            alt_pressed: false,
-        }
+    pub fn remove_window(&mut self, id: super::window::Id) {
+        self.windows
+            .retain(|window| window
+                .upgrade()
+                .map(|window| window.id() != id)
+                .unwrap_or(false)
+            );
     }
 }
 
-
-impl UserCallback {
-
-    // Here we store user's `callback` behind the mutex so that they may be safely shared between
-    // each of the window delegates.
-    //
-    // In order to make sure that the pointer is always valid, we must manually guarantee that it
-    // is dropped before the callback itself is dropped. Thus, this should *only* be called at the
-    // beginning of a call to `poll_events` and `run_forever`, both of which *must* drop the
-    // callback at the end of their scope using the `drop` method.
-    fn store<F>(&self, callback: &mut F)
-        where F: FnMut(Event)
-    {
-        let trait_object = callback as &mut FnMut(Event);
-        let trait_object_ptr = trait_object as *const FnMut(Event) as *mut FnMut(Event);
-        *self.mutex.lock().unwrap() = Some(trait_object_ptr);
-    }
-
-    // Emits the given event via the user-given callback.
-    //
-    // This is unsafe as it requires dereferencing the pointer to the user-given callback. We
-    // guarantee this is safe by ensuring the `UserCallback` never lives longer than the user-given
-    // callback.
-    //
-    // Note that the callback may not always be `Some`. This is because some `NSWindowDelegate`
-    // callbacks can be triggered by means other than `NSApp().sendEvent`. For example, if a window
-    // is destroyed or created during a call to the user's callback, the `WindowDelegate` methods
-    // may be called with `windowShouldClose` or `windowDidResignKey`.
-    unsafe fn call_with_event(&self, event: Event) {
-        let callback = match self.mutex.lock().unwrap().take() {
-            Some(callback) => callback,
-            None => return,
-        };
-        (*callback)(event);
-        *self.mutex.lock().unwrap() = Some(callback);
-    }
-
-    // Used to drop the user callback pointer at the end of the `poll_events` and `run_forever`
-    // methods. This is done to enforce our guarantee that the top callback will never live longer
-    // than the call to either `poll_events` or `run_forever` to which it was given.
-    fn drop(&self) {
-        self.mutex.lock().unwrap().take();
-    }
-
+#[derive(Default)]
+pub struct EventLoopWindowTarget<T: 'static> {
+    pub pending_events: Arc<Mutex<PendingEvents>>,
+    pub windows: Arc<Mutex<WindowList>>,
+    _marker: PhantomData<T>,
 }
 
+#[derive(Default)]
+pub struct EventLoop<T: 'static> {
+    modifiers: Modifiers,
+    elw_target: EventLoopWindowTarget<T>,
+}
 
-impl EventLoop {
-
+impl<T> EventLoop<T> {
     pub fn new() -> Self {
         // Mark this thread as the main thread of the Cocoa event system.
         //
         // This must be done before any worker threads get a chance to call it
         // (e.g., via `EventLoopProxy::wakeup()`), causing a wrong thread to be
         // marked as the main thread.
-        unsafe { appkit::NSApp(); }
-
-        EventLoop {
-            shared: Arc::new(Shared::new()),
-            modifiers: Modifiers::new(),
-        }
+        unsafe { NSApp() };
+        Default::default()
     }
 
     pub fn poll_events<F>(&mut self, mut callback: F)
-        where F: FnMut(Event),
+        where F: FnMut(Event<T>, &EventLoopWindowTarget<T>, ControlFlow),
     {
         unsafe {
             if !msg_send![class!(NSThread), isMainThread] {
@@ -185,40 +112,37 @@ impl EventLoop {
             }
         }
 
-        self.shared.user_callback.store(&mut callback);
-
         // Loop as long as we have pending events to return.
         loop {
             unsafe {
-                // First, yield all pending events.
-                self.shared.call_user_callback_with_pending_events();
+                self.elw_target.ev_access.lock().unwrap().process_events(|event| {
+                    callback(event);
+                });
 
-                let pool = foundation::NSAutoreleasePool::new(cocoa::base::nil);
+                let pool = NSAutoreleasePool::new(nil);
 
                 // Poll for the next event, returning `nil` if there are none.
-                let ns_event = appkit::NSApp().nextEventMatchingMask_untilDate_inMode_dequeue_(
+                let ns_event = NSApp().nextEventMatchingMask_untilDate_inMode_dequeue_(
                     NSEventMask::NSAnyEventMask.bits() | NSEventMask::NSEventMaskPressure.bits(),
-                    foundation::NSDate::distantPast(cocoa::base::nil),
-                    foundation::NSDefaultRunLoopMode,
-                    cocoa::base::YES);
+                    NSDate::distantPast(nil),
+                    NSDefaultRunLoopMode,
+                    YES,
+                );
 
                 let event = self.ns_event_to_event(ns_event);
 
                 let _: () = msg_send![pool, release];
 
                 match event {
-                    // Call the user's callback.
-                    Some(event) => self.shared.user_callback.call_with_event(event),
+                    Some(event) => callback(event),
                     None => break,
                 }
             }
         }
-
-        self.shared.user_callback.drop();
     }
 
     pub fn run_forever<F>(&mut self, mut callback: F)
-        where F: FnMut(Event) -> ControlFlow
+        where F: FnMut(Event<T>, &EventLoopWindowTarget<T>, ControlFlow),
     {
         unsafe {
             if !msg_send![class!(NSThread), isMainThread] {
@@ -227,7 +151,7 @@ impl EventLoop {
         }
 
         // Track whether or not control flow has changed.
-        let control_flow = std::cell::Cell::new(ControlFlow::Continue);
+        let control_flow = Cell::new(ControlFlow::Continue);
 
         let mut callback = |event| {
             if let ControlFlow::Break = callback(event) {
@@ -235,24 +159,23 @@ impl EventLoop {
             }
         };
 
-        self.shared.user_callback.store(&mut callback);
-
         loop {
             unsafe {
-                // First, yield all pending events.
-                self.shared.call_user_callback_with_pending_events();
+                self.elw_target.ev_access.lock().unwrap().process_events(|event| {
+                    callback(event);
+                });
                 if let ControlFlow::Break = control_flow.get() {
                     break;
                 }
 
-                let pool = foundation::NSAutoreleasePool::new(cocoa::base::nil);
+                let pool = NSAutoreleasePool::new(nil);
 
                 // Wait for the next event. Note that this function blocks during resize.
-                let ns_event = appkit::NSApp().nextEventMatchingMask_untilDate_inMode_dequeue_(
+                let ns_event = NSApp().nextEventMatchingMask_untilDate_inMode_dequeue_(
                     NSEventMask::NSAnyEventMask.bits() | NSEventMask::NSEventMaskPressure.bits(),
-                    foundation::NSDate::distantFuture(cocoa::base::nil),
-                    foundation::NSDefaultRunLoopMode,
-                    cocoa::base::YES);
+                    NSDate::distantFuture(nil),
+                    NSDefaultRunLoopMode,
+                    YES);
 
                 let maybe_event = self.ns_event_to_event(ns_event);
 
@@ -261,20 +184,18 @@ impl EventLoop {
                 let _: () = msg_send![pool, release];
 
                 if let Some(event) = maybe_event {
-                    self.shared.user_callback.call_with_event(event);
+                    callback(event);
                     if let ControlFlow::Break = control_flow.get() {
                         break;
                     }
                 }
             }
         }
-
-        self.shared.user_callback.drop();
     }
 
     // Convert some given `NSEvent` into a winit `Event`.
-    unsafe fn ns_event_to_event(&mut self, ns_event: cocoa::base::id) -> Option<Event> {
-        if ns_event == cocoa::base::nil {
+    unsafe fn ns_event_to_event(&mut self, ns_event: id) -> Option<Event<T>> {
+        if ns_event == nil {
             return None;
         }
 
@@ -294,7 +215,7 @@ impl EventLoop {
 
         // FIXME: Document this. Why do we do this? Seems like it passes on events to window/app.
         // If we don't do this, window does not become main for some reason.
-        appkit::NSApp().sendEvent_(ns_event);
+        NSApp().sendEvent_(ns_event);
 
         let windows = self.shared.windows.lock().unwrap();
         let maybe_window = windows.iter()
@@ -302,7 +223,7 @@ impl EventLoop {
             .find(|window| window_id == window.id());
 
         let into_event = |window_event| Event::WindowEvent {
-            window_id: ::WindowId(window_id),
+            window_id: window::WindowId(window_id),
             event: window_event,
         };
 
@@ -310,8 +231,8 @@ impl EventLoop {
         let maybe_key_window = || windows.iter()
             .filter_map(Weak::upgrade)
             .find(|window| {
-                let is_key_window: cocoa::base::BOOL = msg_send![*window.window, isKeyWindow];
-                is_key_window == cocoa::base::YES
+                let is_key_window: BOOL = msg_send![*window.window, isKeyWindow];
+                is_key_window == YES
             });
 
         match event_type {
@@ -337,7 +258,7 @@ impl EventLoop {
                 }
             },
             appkit::NSFlagsChanged => {
-                let mut events = std::collections::VecDeque::new();
+                let mut events = VecDeque::new();
 
                 if let Some(window_event) = modifier_event(
                     ns_event,
@@ -390,13 +311,13 @@ impl EventLoop {
                 };
 
                 let window_point = ns_event.locationInWindow();
-                let view_point = if ns_window == cocoa::base::nil {
-                    let ns_size = foundation::NSSize::new(0.0, 0.0);
-                    let ns_rect = foundation::NSRect::new(window_point, ns_size);
+                let view_point = if ns_window == nil {
+                    let ns_size = NSSize::new(0.0, 0.0);
+                    let ns_rect = NSRect::new(window_point, ns_size);
                     let window_rect = window.window.convertRectFromScreen_(ns_rect);
-                    window.view.convertPoint_fromView_(window_rect.origin, cocoa::base::nil)
+                    window.view.convertPoint_fromView_(window_rect.origin, nil)
                 } else {
-                    window.view.convertPoint_fromView_(window_point, cocoa::base::nil)
+                    window.view.convertPoint_fromView_(window_point, nil)
                 };
 
                 let view_rect = NSView::frame(*window.view);
@@ -407,7 +328,7 @@ impl EventLoop {
                     position: (x, y).into(),
                     modifiers: event_mods(ns_event),
                 };
-                let event = Event::WindowEvent { window_id: ::WindowId(window.id()), event: window_event };
+                let event = Event::WindowEvent { window_id: window::WindowId(window.id()), event: window_event };
                 self.shared.pending_events.lock().unwrap().push_back(event);
                 Some(into_event(WindowEvent::CursorEntered { device_id: DEVICE_ID }))
             },
@@ -425,7 +346,7 @@ impl EventLoop {
                     None => return None,
                 }
 
-                let mut events = std::collections::VecDeque::with_capacity(3);
+                let mut events = VecDeque::with_capacity(3);
 
                 let delta_x = ns_event.deltaX() as f64;
                 if delta_x != 0.0 {
@@ -448,7 +369,7 @@ impl EventLoop {
                 }
 
                 let event = events.pop_front();
-                self.shared.pending_events.lock().unwrap().extend(events.into_iter());
+                self.ev_access.pending_events.lock().unwrap().extend(events.into_iter());
                 event
             },
 
@@ -458,8 +379,8 @@ impl EventLoop {
                     return None;
                 }
 
-                use events::MouseScrollDelta::{LineDelta, PixelDelta};
-                let delta = if ns_event.hasPreciseScrollingDeltas() == cocoa::base::YES {
+                use event::MouseScrollDelta::{LineDelta, PixelDelta};
+                let delta = if ns_event.hasPreciseScrollingDeltas() == YES {
                     PixelDelta((
                         ns_event.scrollingDeltaX() as f64,
                         ns_event.scrollingDeltaY() as f64,
@@ -479,7 +400,7 @@ impl EventLoop {
                 self.shared.pending_events.lock().unwrap().push_back(Event::DeviceEvent {
                     device_id: DEVICE_ID,
                     event: DeviceEvent::MouseWheel {
-                        delta: if ns_event.hasPreciseScrollingDeltas() == cocoa::base::YES {
+                        delta: if ns_event.hasPreciseScrollingDeltas() == YES {
                             PixelDelta((
                                 ns_event.scrollingDeltaX() as f64,
                                 ns_event.scrollingDeltaY() as f64,
@@ -492,19 +413,28 @@ impl EventLoop {
                         },
                     }
                 });
-                let window_event = WindowEvent::MouseWheel { device_id: DEVICE_ID, delta: delta, phase: phase, modifiers: event_mods(ns_event) };
+                let window_event = WindowEvent::MouseWheel {
+                    device_id: DEVICE_ID,
+                    delta,
+                    phase,
+                    modifiers: event_mods(ns_event),
+                };
                 Some(into_event(window_event))
             },
 
             appkit::NSEventTypePressure => {
                 let pressure = ns_event.pressure();
                 let stage = ns_event.stage();
-                let window_event = WindowEvent::TouchpadPressure { device_id: DEVICE_ID, pressure: pressure, stage: stage };
+                let window_event = WindowEvent::TouchpadPressure {
+                    device_id: DEVICE_ID,
+                    pressure,
+                    stage,
+                };
                 Some(into_event(window_event))
             },
 
-            appkit::NSApplicationDefined => match ns_event.subtype() {
-                appkit::NSEventSubtype::NSApplicationActivatedEventType => {
+            NSApplicationDefined => match ns_event.subtype() {
+                NSEventSubtype::NSApplicationActivatedEventType => {
                     Some(Event::Awakened)
                 },
                 _ => None,
@@ -514,182 +444,187 @@ impl EventLoop {
         }
     }
 
-    pub fn create_proxy(&self) -> Proxy {
-        Proxy {}
+    pub fn create_proxy(&self) -> Proxy<T> {
+        Proxy::default()
     }
-
 }
 
-impl Proxy {
+#[derive(Clone, Default)]
+pub struct Proxy<T> {
+    _marker: PhantomData<T>,
+}
+
+impl<T> Proxy<T> {
     pub fn wakeup(&self) -> Result<(), EventLoopClosed> {
         // Awaken the event loop by triggering `NSApplicationActivatedEventType`.
         unsafe {
-            let pool = foundation::NSAutoreleasePool::new(cocoa::base::nil);
+            let pool = NSAutoreleasePool::new(nil);
             let event =
                 NSEvent::otherEventWithType_location_modifierFlags_timestamp_windowNumber_context_subtype_data1_data2_(
-                    cocoa::base::nil,
-                    appkit::NSApplicationDefined,
-                    foundation::NSPoint::new(0.0, 0.0),
-                    appkit::NSEventModifierFlags::empty(),
+                    nil,
+                    NSApplicationDefined,
+                    NSPoint::new(0.0, 0.0),
+                    NSEventModifierFlags::empty(),
                     0.0,
                     0,
-                    cocoa::base::nil,
-                    appkit::NSEventSubtype::NSApplicationActivatedEventType,
+                    nil,
+                    NSEventSubtype::NSApplicationActivatedEventType,
                     0,
-                    0);
-            appkit::NSApp().postEvent_atStart_(event, cocoa::base::NO);
-            foundation::NSAutoreleasePool::drain(pool);
+                    0,
+                );
+            NSApp().postEvent_atStart_(event, NO);
+            NSAutoreleasePool::drain(pool);
         }
         Ok(())
     }
 }
 
-pub fn to_virtual_key_code(code: c_ushort) -> Option<events::VirtualKeyCode> {
+pub fn to_virtual_key_code(code: c_ushort) -> Option<event::VirtualKeyCode> {
     Some(match code {
-        0x00 => events::VirtualKeyCode::A,
-        0x01 => events::VirtualKeyCode::S,
-        0x02 => events::VirtualKeyCode::D,
-        0x03 => events::VirtualKeyCode::F,
-        0x04 => events::VirtualKeyCode::H,
-        0x05 => events::VirtualKeyCode::G,
-        0x06 => events::VirtualKeyCode::Z,
-        0x07 => events::VirtualKeyCode::X,
-        0x08 => events::VirtualKeyCode::C,
-        0x09 => events::VirtualKeyCode::V,
+        0x00 => event::VirtualKeyCode::A,
+        0x01 => event::VirtualKeyCode::S,
+        0x02 => event::VirtualKeyCode::D,
+        0x03 => event::VirtualKeyCode::F,
+        0x04 => event::VirtualKeyCode::H,
+        0x05 => event::VirtualKeyCode::G,
+        0x06 => event::VirtualKeyCode::Z,
+        0x07 => event::VirtualKeyCode::X,
+        0x08 => event::VirtualKeyCode::C,
+        0x09 => event::VirtualKeyCode::V,
         //0x0a => World 1,
-        0x0b => events::VirtualKeyCode::B,
-        0x0c => events::VirtualKeyCode::Q,
-        0x0d => events::VirtualKeyCode::W,
-        0x0e => events::VirtualKeyCode::E,
-        0x0f => events::VirtualKeyCode::R,
-        0x10 => events::VirtualKeyCode::Y,
-        0x11 => events::VirtualKeyCode::T,
-        0x12 => events::VirtualKeyCode::Key1,
-        0x13 => events::VirtualKeyCode::Key2,
-        0x14 => events::VirtualKeyCode::Key3,
-        0x15 => events::VirtualKeyCode::Key4,
-        0x16 => events::VirtualKeyCode::Key6,
-        0x17 => events::VirtualKeyCode::Key5,
-        0x18 => events::VirtualKeyCode::Equals,
-        0x19 => events::VirtualKeyCode::Key9,
-        0x1a => events::VirtualKeyCode::Key7,
-        0x1b => events::VirtualKeyCode::Minus,
-        0x1c => events::VirtualKeyCode::Key8,
-        0x1d => events::VirtualKeyCode::Key0,
-        0x1e => events::VirtualKeyCode::RBracket,
-        0x1f => events::VirtualKeyCode::O,
-        0x20 => events::VirtualKeyCode::U,
-        0x21 => events::VirtualKeyCode::LBracket,
-        0x22 => events::VirtualKeyCode::I,
-        0x23 => events::VirtualKeyCode::P,
-        0x24 => events::VirtualKeyCode::Return,
-        0x25 => events::VirtualKeyCode::L,
-        0x26 => events::VirtualKeyCode::J,
-        0x27 => events::VirtualKeyCode::Apostrophe,
-        0x28 => events::VirtualKeyCode::K,
-        0x29 => events::VirtualKeyCode::Semicolon,
-        0x2a => events::VirtualKeyCode::Backslash,
-        0x2b => events::VirtualKeyCode::Comma,
-        0x2c => events::VirtualKeyCode::Slash,
-        0x2d => events::VirtualKeyCode::N,
-        0x2e => events::VirtualKeyCode::M,
-        0x2f => events::VirtualKeyCode::Period,
-        0x30 => events::VirtualKeyCode::Tab,
-        0x31 => events::VirtualKeyCode::Space,
-        0x32 => events::VirtualKeyCode::Grave,
-        0x33 => events::VirtualKeyCode::Back,
+        0x0b => event::VirtualKeyCode::B,
+        0x0c => event::VirtualKeyCode::Q,
+        0x0d => event::VirtualKeyCode::W,
+        0x0e => event::VirtualKeyCode::E,
+        0x0f => event::VirtualKeyCode::R,
+        0x10 => event::VirtualKeyCode::Y,
+        0x11 => event::VirtualKeyCode::T,
+        0x12 => event::VirtualKeyCode::Key1,
+        0x13 => event::VirtualKeyCode::Key2,
+        0x14 => event::VirtualKeyCode::Key3,
+        0x15 => event::VirtualKeyCode::Key4,
+        0x16 => event::VirtualKeyCode::Key6,
+        0x17 => event::VirtualKeyCode::Key5,
+        0x18 => event::VirtualKeyCode::Equals,
+        0x19 => event::VirtualKeyCode::Key9,
+        0x1a => event::VirtualKeyCode::Key7,
+        0x1b => event::VirtualKeyCode::Minus,
+        0x1c => event::VirtualKeyCode::Key8,
+        0x1d => event::VirtualKeyCode::Key0,
+        0x1e => event::VirtualKeyCode::RBracket,
+        0x1f => event::VirtualKeyCode::O,
+        0x20 => event::VirtualKeyCode::U,
+        0x21 => event::VirtualKeyCode::LBracket,
+        0x22 => event::VirtualKeyCode::I,
+        0x23 => event::VirtualKeyCode::P,
+        0x24 => event::VirtualKeyCode::Return,
+        0x25 => event::VirtualKeyCode::L,
+        0x26 => event::VirtualKeyCode::J,
+        0x27 => event::VirtualKeyCode::Apostrophe,
+        0x28 => event::VirtualKeyCode::K,
+        0x29 => event::VirtualKeyCode::Semicolon,
+        0x2a => event::VirtualKeyCode::Backslash,
+        0x2b => event::VirtualKeyCode::Comma,
+        0x2c => event::VirtualKeyCode::Slash,
+        0x2d => event::VirtualKeyCode::N,
+        0x2e => event::VirtualKeyCode::M,
+        0x2f => event::VirtualKeyCode::Period,
+        0x30 => event::VirtualKeyCode::Tab,
+        0x31 => event::VirtualKeyCode::Space,
+        0x32 => event::VirtualKeyCode::Grave,
+        0x33 => event::VirtualKeyCode::Back,
         //0x34 => unkown,
-        0x35 => events::VirtualKeyCode::Escape,
-        0x36 => events::VirtualKeyCode::LWin,
-        0x37 => events::VirtualKeyCode::RWin,
-        0x38 => events::VirtualKeyCode::LShift,
+        0x35 => event::VirtualKeyCode::Escape,
+        0x36 => event::VirtualKeyCode::LWin,
+        0x37 => event::VirtualKeyCode::RWin,
+        0x38 => event::VirtualKeyCode::LShift,
         //0x39 => Caps lock,
-        0x3a => events::VirtualKeyCode::LAlt,
-        0x3b => events::VirtualKeyCode::LControl,
-        0x3c => events::VirtualKeyCode::RShift,
-        0x3d => events::VirtualKeyCode::RAlt,
-        0x3e => events::VirtualKeyCode::RControl,
+        0x3a => event::VirtualKeyCode::LAlt,
+        0x3b => event::VirtualKeyCode::LControl,
+        0x3c => event::VirtualKeyCode::RShift,
+        0x3d => event::VirtualKeyCode::RAlt,
+        0x3e => event::VirtualKeyCode::RControl,
         //0x3f => Fn key,
-        0x40 => events::VirtualKeyCode::F17,
-        0x41 => events::VirtualKeyCode::Decimal,
+        0x40 => event::VirtualKeyCode::F17,
+        0x41 => event::VirtualKeyCode::Decimal,
         //0x42 -> unkown,
-        0x43 => events::VirtualKeyCode::Multiply,
+        0x43 => event::VirtualKeyCode::Multiply,
         //0x44 => unkown,
-        0x45 => events::VirtualKeyCode::Add,
+        0x45 => event::VirtualKeyCode::Add,
         //0x46 => unkown,
-        0x47 => events::VirtualKeyCode::Numlock,
+        0x47 => event::VirtualKeyCode::Numlock,
         //0x48 => KeypadClear,
-        0x49 => events::VirtualKeyCode::VolumeUp,
-        0x4a => events::VirtualKeyCode::VolumeDown,
-        0x4b => events::VirtualKeyCode::Divide,
-        0x4c => events::VirtualKeyCode::NumpadEnter,
+        0x49 => event::VirtualKeyCode::VolumeUp,
+        0x4a => event::VirtualKeyCode::VolumeDown,
+        0x4b => event::VirtualKeyCode::Divide,
+        0x4c => event::VirtualKeyCode::NumpadEnter,
         //0x4d => unkown,
-        0x4e => events::VirtualKeyCode::Subtract,
-        0x4f => events::VirtualKeyCode::F18,
-        0x50 => events::VirtualKeyCode::F19,
-        0x51 => events::VirtualKeyCode::NumpadEquals,
-        0x52 => events::VirtualKeyCode::Numpad0,
-        0x53 => events::VirtualKeyCode::Numpad1,
-        0x54 => events::VirtualKeyCode::Numpad2,
-        0x55 => events::VirtualKeyCode::Numpad3,
-        0x56 => events::VirtualKeyCode::Numpad4,
-        0x57 => events::VirtualKeyCode::Numpad5,
-        0x58 => events::VirtualKeyCode::Numpad6,
-        0x59 => events::VirtualKeyCode::Numpad7,
-        0x5a => events::VirtualKeyCode::F20,
-        0x5b => events::VirtualKeyCode::Numpad8,
-        0x5c => events::VirtualKeyCode::Numpad9,
+        0x4e => event::VirtualKeyCode::Subtract,
+        0x4f => event::VirtualKeyCode::F18,
+        0x50 => event::VirtualKeyCode::F19,
+        0x51 => event::VirtualKeyCode::NumpadEquals,
+        0x52 => event::VirtualKeyCode::Numpad0,
+        0x53 => event::VirtualKeyCode::Numpad1,
+        0x54 => event::VirtualKeyCode::Numpad2,
+        0x55 => event::VirtualKeyCode::Numpad3,
+        0x56 => event::VirtualKeyCode::Numpad4,
+        0x57 => event::VirtualKeyCode::Numpad5,
+        0x58 => event::VirtualKeyCode::Numpad6,
+        0x59 => event::VirtualKeyCode::Numpad7,
+        0x5a => event::VirtualKeyCode::F20,
+        0x5b => event::VirtualKeyCode::Numpad8,
+        0x5c => event::VirtualKeyCode::Numpad9,
         //0x5d => unkown,
         //0x5e => unkown,
         //0x5f => unkown,
-        0x60 => events::VirtualKeyCode::F5,
-        0x61 => events::VirtualKeyCode::F6,
-        0x62 => events::VirtualKeyCode::F7,
-        0x63 => events::VirtualKeyCode::F3,
-        0x64 => events::VirtualKeyCode::F8,
-        0x65 => events::VirtualKeyCode::F9,
+        0x60 => event::VirtualKeyCode::F5,
+        0x61 => event::VirtualKeyCode::F6,
+        0x62 => event::VirtualKeyCode::F7,
+        0x63 => event::VirtualKeyCode::F3,
+        0x64 => event::VirtualKeyCode::F8,
+        0x65 => event::VirtualKeyCode::F9,
         //0x66 => unkown,
-        0x67 => events::VirtualKeyCode::F11,
+        0x67 => event::VirtualKeyCode::F11,
         //0x68 => unkown,
-        0x69 => events::VirtualKeyCode::F13,
-        0x6a => events::VirtualKeyCode::F16,
-        0x6b => events::VirtualKeyCode::F14,
+        0x69 => event::VirtualKeyCode::F13,
+        0x6a => event::VirtualKeyCode::F16,
+        0x6b => event::VirtualKeyCode::F14,
         //0x6c => unkown,
-        0x6d => events::VirtualKeyCode::F10,
+        0x6d => event::VirtualKeyCode::F10,
         //0x6e => unkown,
-        0x6f => events::VirtualKeyCode::F12,
+        0x6f => event::VirtualKeyCode::F12,
         //0x70 => unkown,
-        0x71 => events::VirtualKeyCode::F15,
-        0x72 => events::VirtualKeyCode::Insert,
-        0x73 => events::VirtualKeyCode::Home,
-        0x74 => events::VirtualKeyCode::PageUp,
-        0x75 => events::VirtualKeyCode::Delete,
-        0x76 => events::VirtualKeyCode::F4,
-        0x77 => events::VirtualKeyCode::End,
-        0x78 => events::VirtualKeyCode::F2,
-        0x79 => events::VirtualKeyCode::PageDown,
-        0x7a => events::VirtualKeyCode::F1,
-        0x7b => events::VirtualKeyCode::Left,
-        0x7c => events::VirtualKeyCode::Right,
-        0x7d => events::VirtualKeyCode::Down,
-        0x7e => events::VirtualKeyCode::Up,
+        0x71 => event::VirtualKeyCode::F15,
+        0x72 => event::VirtualKeyCode::Insert,
+        0x73 => event::VirtualKeyCode::Home,
+        0x74 => event::VirtualKeyCode::PageUp,
+        0x75 => event::VirtualKeyCode::Delete,
+        0x76 => event::VirtualKeyCode::F4,
+        0x77 => event::VirtualKeyCode::End,
+        0x78 => event::VirtualKeyCode::F2,
+        0x79 => event::VirtualKeyCode::PageDown,
+        0x7a => event::VirtualKeyCode::F1,
+        0x7b => event::VirtualKeyCode::Left,
+        0x7c => event::VirtualKeyCode::Right,
+        0x7d => event::VirtualKeyCode::Down,
+        0x7e => event::VirtualKeyCode::Up,
         //0x7f =>  unkown,
 
-        0xa => events::VirtualKeyCode::Caret,
+        0xa => event::VirtualKeyCode::Caret,
         _ => return None,
     })
 }
 
 pub fn check_additional_virtual_key_codes(
     s: &Option<String>
-) -> Option<events::VirtualKeyCode> {
+) -> Option<event::VirtualKeyCode> {
     if let &Some(ref s) = s {
         if let Some(ch) = s.encode_utf16().next() {
             return Some(match ch {
-                0xf718 => events::VirtualKeyCode::F21,
-                0xf719 => events::VirtualKeyCode::F22,
-                0xf71a => events::VirtualKeyCode::F23,
-                0xf71b => events::VirtualKeyCode::F24,
+                0xf718 => event::VirtualKeyCode::F21,
+                0xf719 => event::VirtualKeyCode::F22,
+                0xf71a => event::VirtualKeyCode::F23,
+                0xf71b => event::VirtualKeyCode::F24,
                 _ => return None,
             })
         }
@@ -697,7 +632,7 @@ pub fn check_additional_virtual_key_codes(
     None
 }
 
-pub fn event_mods(event: cocoa::base::id) -> ModifiersState {
+pub fn event_mods(event: id) -> ModifiersState {
     let flags = unsafe {
         NSEvent::modifierFlags(event)
     };
@@ -710,7 +645,7 @@ pub fn event_mods(event: cocoa::base::id) -> ModifiersState {
 }
 
 unsafe fn modifier_event(
-    ns_event: cocoa::base::id,
+    ns_event: id,
     keymask: NSEventModifierFlags,
     was_key_pressed: bool,
 ) -> Option<WindowEvent> {
@@ -737,6 +672,3 @@ unsafe fn modifier_event(
         None
     }
 }
-
-// Constant device ID, to be removed when this backend is updated to report real device IDs.
-pub const DEVICE_ID: ::DeviceId = ::DeviceId(DeviceId);

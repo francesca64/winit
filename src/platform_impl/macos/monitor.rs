@@ -1,14 +1,14 @@
-use std::collections::VecDeque;
-use std::fmt;
+use std::{collections::VecDeque, fmt};
 
-use cocoa::appkit::NSScreen;
-use cocoa::base::{id, nil};
-use cocoa::foundation::{NSString, NSUInteger};
+use cocoa::{
+    appkit::NSScreen,
+    base::{id, nil},
+    foundation::{NSString, NSUInteger},
+};
 use core_graphics::display::{CGDirectDisplayID, CGDisplay, CGDisplayBounds};
 
-use {PhysicalPosition, PhysicalSize};
-use super::EventLoop;
-use super::window::{IdRef, Window2};
+use dpi::{PhysicalPosition, PhysicalSize};
+use super::{event_loop::EventLoop, util::IdRef, window::UnownedWindow};
 
 #[derive(Clone, PartialEq)]
 pub struct MonitorHandle(CGDirectDisplayID);
@@ -26,11 +26,10 @@ fn get_available_monitors() -> VecDeque<MonitorHandle> {
 }
 
 pub fn get_primary_monitor() -> MonitorHandle {
-    let id = MonitorHandle(CGDisplay::main().id);
-    id
+    MonitorHandle(CGDisplay::main().id)
 }
 
-impl EventLoop {
+impl<T: 'static> EventLoop<T> {
     #[inline]
     pub fn get_available_monitors(&self) -> VecDeque<MonitorHandle> {
         get_available_monitors()
@@ -47,7 +46,7 @@ impl EventLoop {
     }
 }
 
-impl Window2 {
+impl UnownedWindow {
     #[inline]
     pub fn get_available_monitors(&self) -> VecDeque<MonitorHandle> {
         get_available_monitors()
@@ -61,6 +60,7 @@ impl Window2 {
 
 impl fmt::Debug for MonitorHandle {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        // TODO: Do this using the proper fmt API
         #[derive(Debug)]
         struct MonitorHandle {
             name: Option<String>,

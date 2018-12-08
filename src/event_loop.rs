@@ -32,7 +32,7 @@ use monitor::{AvailableMonitorsIter, MonitorHandle};
 /// `EventLoopProxy` allows you to wake up an `EventLoop` from an other thread.
 pub struct EventLoop<T: 'static> {
     pub(crate) event_loop: platform_impl::EventLoop<T>,
-    pub(crate) _marker: ::std::marker::PhantomData<*mut ()> // Not Send nor Sync
+    pub(crate) _marker: ::std::marker::PhantomData<*mut ()>, // Not Send nor Sync
 }
 
 /// Target that associates windows with an `EventLoop`.
@@ -42,7 +42,7 @@ pub struct EventLoop<T: 'static> {
 /// take `&EventLoop`.
 pub struct EventLoopWindowTarget<T: 'static> {
     pub(crate) p: platform_impl::EventLoopWindowTarget<T>,
-    pub(crate) _marker: ::std::marker::PhantomData<*mut ()> // Not Send nor Sync
+    pub(crate) _marker: ::std::marker::PhantomData<*mut ()>, // Not Send nor Sync
 }
 
 impl<T> fmt::Debug for EventLoop<T> {

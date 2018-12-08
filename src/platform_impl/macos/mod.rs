@@ -1,45 +1,59 @@
 #![cfg(target_os = "macos")]
 
-pub use self::event_loop::{EventLoop, Proxy as EventLoopProxy};
-pub use self::monitor::MonitorHandle;
-pub use self::window::{Id as WindowId, PlatformSpecificWindowBuilderAttributes, Window2};
-use std::sync::Arc;
-
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct DeviceId;
-
-use {CreationError};
-
-pub struct Window {
-    pub window: Arc<Window2>,
-}
-
-impl ::std::ops::Deref for Window {
-    type Target = Window2;
-    #[inline]
-    fn deref(&self) -> &Window2 {
-        &*self.window
-    }
-}
-
-impl Window {
-
-    pub fn new(event_loop: &EventLoop,
-               attributes: ::WindowAttributes,
-               pl_attribs: PlatformSpecificWindowBuilderAttributes) -> Result<Self, CreationError>
-    {
-        let weak_shared = Arc::downgrade(&event_loop.shared);
-        let window = Arc::new(try!(Window2::new(weak_shared, attributes, pl_attribs)));
-        let weak_window = Arc::downgrade(&window);
-        event_loop.shared.windows.lock().unwrap().push(weak_window);
-        Ok(Window { window: window })
-    }
-
-}
-
 mod event_loop;
 mod ffi;
 mod monitor;
 mod util;
 mod view;
 mod window;
+mod window_delegate;
+
+use std::{ops::Deref, sync::Arc};
+
+pub use self::{
+    event,
+    event_loop::{EventLoopWindowTarget, Proxy as EventLoopProxy},
+    monitor::MonitorHandle,
+    window::{
+        Id as WindowId, PlatformSpecificWindowBuilderAttributes,
+        UnownedWindow, WindowDelegate,
+    },
+};
+use window::{CreationError, WindowAttributes};
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DeviceId;
+
+// Constant device ID; to be removed when if backend is updated to report real device IDs.
+pub(crate) const DEVICE_ID: event::DeviceId = event::DeviceId(DeviceId);
+
+pub struct Window {
+    window: Arc<UnownedWindow>,
+    delegate: WindowDelegate,
+}
+
+impl Deref for Window {
+    type Target = UnownedWindow;
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        &*self.window
+    }
+}
+
+impl Window {
+    pub fn new<T: 'static>(
+        event_loop: &EventLoopWindowTarget<T>,
+        attributes: WindowAttributes,
+        pl_attribs: PlatformSpecificWindowBuilderAttributes,
+    ) -> Result<Self, CreationError> {
+        UnownedWindow::new(Arc::downgrade(&event_loop.shared), attributes, pl_attribs)
+            .map(Arc::new)
+            .map(|(window, delegate)| {
+                event_loop.shared.windows
+                    .lock()
+                    .unwrap()
+                    .push(Arc::downgrade(&window));
+                Window { window, delegate }
+            })
+    }
+}
