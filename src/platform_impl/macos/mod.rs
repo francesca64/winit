@@ -10,26 +10,28 @@ mod window_delegate;
 
 use std::{ops::Deref, sync::Arc};
 
+use {
+    event::DeviceId as RootDeviceId, window::{CreationError, WindowAttributes},
+};
 pub use self::{
-    event,
-    event_loop::{EventLoopWindowTarget, Proxy as EventLoopProxy},
+    event_loop::{EventLoop, EventLoopWindowTarget, Proxy as EventLoopProxy},
     monitor::MonitorHandle,
     window::{
-        Id as WindowId, PlatformSpecificWindowBuilderAttributes,
-        UnownedWindow, WindowDelegate,
+        Id as WindowId, PlatformSpecificWindowBuilderAttributes, UnownedWindow,
     },
 };
-use window::{CreationError, WindowAttributes};
+use self::window_delegate::WindowDelegate;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct DeviceId;
 
 // Constant device ID; to be removed when if backend is updated to report real device IDs.
-pub(crate) const DEVICE_ID: event::DeviceId = event::DeviceId(DeviceId);
+pub(crate) const DEVICE_ID: RootDeviceId = RootDeviceId(DeviceId);
 
 pub struct Window {
     window: Arc<UnownedWindow>,
-    delegate: WindowDelegate,
+    // We keep this around so that it doesn't get dropped until the window does.
+    _delegate: WindowDelegate,
 }
 
 impl Deref for Window {
@@ -42,18 +44,18 @@ impl Deref for Window {
 
 impl Window {
     pub fn new<T: 'static>(
-        event_loop: &EventLoopWindowTarget<T>,
+        elw_target: &EventLoopWindowTarget<T>,
         attributes: WindowAttributes,
         pl_attribs: PlatformSpecificWindowBuilderAttributes,
     ) -> Result<Self, CreationError> {
-        UnownedWindow::new(Arc::downgrade(&event_loop.shared), attributes, pl_attribs)
-            .map(Arc::new)
-            .map(|(window, delegate)| {
-                event_loop.shared.windows
+        UnownedWindow::new(elw_target, attributes, pl_attribs)
+            .map(|(window, _delegate)| {
+                elw_target
+                    .window_list
                     .lock()
                     .unwrap()
-                    .push(Arc::downgrade(&window));
-                Window { window, delegate }
+                    .insert_window(Arc::downgrade(&window));
+                Window { window, _delegate }
             })
     }
 }

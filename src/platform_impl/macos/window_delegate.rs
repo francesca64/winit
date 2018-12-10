@@ -1,9 +1,9 @@
-use std::{f64, os::raw::c_void, sync::{Mutex, Weak}};
+use std::{f64, os::raw::c_void, sync::{Arc, Mutex, Weak}};
 
 use cocoa::{
     appkit::{self, NSView, NSWindow},
     base::{id, nil},
-    foundation::{NSAutoreleasePool, NSPoint, NSRect, NSSize},
+    foundation::NSAutoreleasePool,
 };
 use objc::{runtime::{Class, Object, Sel, BOOL, YES, NO}, declare::ClassDecl};
 
@@ -13,25 +13,25 @@ use {
     window::WindowId,
 };
 use platform_impl::platform::{
-    event_loop::{PendingEvents, WindowList},
+    event_loop::{EventLoopWindowTarget, PendingEvents, WindowList},
     util::{self, Access, IdRef},
     window::{get_window_id, UnownedWindow},
 };
 
-struct WindowDelegateState {
+pub struct WindowDelegateState {
     nswindow: IdRef, // never changes
     nsview: IdRef, // never changes
 
     window: Weak<UnownedWindow>,
     pending_events: Weak<Mutex<PendingEvents>>,
-    window_list: Weak<Mutex<UnownedWindow>>,
+    window_list: Weak<Mutex<WindowList>>,
 
     // TODO: It's possible for delegate methods to be called asynchronously,
     // causing data races / `RefCell` panics.
 
     // This is set when WindowBuilder::with_fullscreen was set,
     // see comments of `window_did_fail_to_enter_fullscreen`
-    handle_with_fullscreen: bool,
+    initial_fullscreen: bool,
 
     // During `windowDidResize`, we use this to only send Moved if the position changed.
     previous_position: Option<(f64, f64)>,
@@ -41,15 +41,41 @@ struct WindowDelegateState {
 }
 
 impl WindowDelegateState {
+    pub fn new<T: 'static>(
+        window: &Arc<UnownedWindow>,
+        elw_target: &EventLoopWindowTarget<T>,
+        initial_fullscreen: bool,
+    ) -> Self {
+        let dpi_factor = window.get_hidpi_factor();
+
+        let mut delegate_state = WindowDelegateState {
+            nswindow: window.nswindow.clone(),
+            nsview: window.nsview.clone(),
+            window: Arc::downgrade(&window),
+            pending_events: Arc::downgrade(&elw_target.pending_events),
+            window_list: Arc::downgrade(&elw_target.window_list),
+            initial_fullscreen,
+            previous_position: None,
+            previous_dpi_factor: dpi_factor,
+        };
+
+        if dpi_factor != 1.0 {
+            delegate_state.emit_event(WindowEvent::HiDpiFactorChanged(dpi_factor));
+            delegate_state.emit_resize_event();
+        }
+
+        delegate_state
+    }
+
     fn with_window<F, T>(&mut self, callback: F) -> Option<T>
-        where F: FnMut(&UnownedWindow) -> T
+        where F: FnOnce(&UnownedWindow) -> T
     {
         self.window
             .upgrade()
             .map(|ref window| callback(window))
     }
 
-    fn emit_event(&mut self, event: WindowEvent) {
+    pub fn emit_event(&mut self, event: WindowEvent) {
         let event = Event::WindowEvent {
             window_id: WindowId(get_window_id(*self.nswindow)),
             event,
@@ -57,7 +83,7 @@ impl WindowDelegateState {
         self.pending_events.access(|pending| pending.queue_event(event));
     }
 
-    fn emit_resize_event(&mut self) {
+    pub fn emit_resize_event(&mut self) {
         let rect = unsafe { NSView::frame(*self.nsview) };
         let size = LogicalSize::new(rect.size.width as f64, rect.size.height as f64);
         self.emit_event(WindowEvent::Resized(size));
@@ -81,8 +107,8 @@ pub struct WindowDelegate {
 }
 
 impl WindowDelegate {
-    fn new(state: WindowDelegateState) -> WindowDelegate {
-        // Box the state so we can give a pointer to it
+    pub fn new(state: WindowDelegateState) -> WindowDelegate {
+        // Box the state so it will have a fixed address
         let mut state = Box::new(state);
         let state_ptr: *mut WindowDelegateState = &mut *state;
         unsafe {
@@ -104,12 +130,14 @@ impl WindowDelegate {
 
 impl Drop for WindowDelegate {
     fn drop(&mut self) {
-        // Nil the window's delegate so it doesn't still reference us
-        // NOTE: setDelegate:nil at first retains the previous value,
-        // and then autoreleases it, so autorelease pool is needed
-        let autoreleasepool = NSAutoreleasePool::new(nil);
-        let _: () = msg_send![*self.state.nswindow, setDelegate:nil];
-        let _: () = msg_send![autoreleasepool, drain];
+        unsafe {
+            // Nil the window's delegate so it doesn't still reference us
+            // NOTE: setDelegate:nil at first retains the previous value,
+            // and then autoreleases it, so autorelease pool is needed
+            let autoreleasepool = NSAutoreleasePool::new(nil);
+            let _: () = msg_send![*self.state.nswindow, setDelegate:nil];
+            let _: () = msg_send![autoreleasepool, drain];
+        }
     }
 }
 
@@ -198,13 +226,21 @@ lazy_static! {
     };
 }
 
-fn with_state<F: FnMut(&mut WindowDelegateState) -> T, T>(this: &Object, callback: F) {
+// This function is definitely unsafe, but labeling that would increase
+// boilerplate and wouldn't really clarify anything...
+fn with_state<F: FnOnce(&mut WindowDelegateState) -> T, T>(this: &Object, callback: F) {
     let state_ptr = unsafe {
         let state_ptr: *mut c_void = *this.get_ivar("winitState");
         &mut *(state_ptr as *mut WindowDelegateState)
     };
     callback(state_ptr);
 }
+
+// extern fn dealloc(this: &Object, _sel: Sel) {
+//     with_state(this, |state| unsafe {
+//         Box::from_raw(state as *mut WindowDelegateState);
+//     });
+// }
 
 extern fn window_should_close(this: &Object, _: Sel, _: id) -> BOOL {
     with_state(this, |state| state.emit_event(WindowEvent::CloseRequested));
@@ -236,7 +272,9 @@ extern fn window_did_move(this: &Object, _: Sel, _: id) {
 
 extern fn window_did_change_screen(this: &Object, _: Sel, _: id) {
     with_state(this, |state| {
-        let dpi_factor = NSWindow::backingScaleFactor(*state.nswindow) as f64;
+        let dpi_factor = unsafe {
+            NSWindow::backingScaleFactor(*state.nswindow)
+         } as f64;
         if state.previous_dpi_factor != dpi_factor {
             state.previous_dpi_factor = dpi_factor;
             state.emit_event(WindowEvent::HiDpiFactorChanged(dpi_factor));
@@ -248,7 +286,9 @@ extern fn window_did_change_screen(this: &Object, _: Sel, _: id) {
 // This will always be called before `window_did_change_screen`.
 extern fn window_did_change_backing_properties(this: &Object, _:Sel, _:id) {
     with_state(this, |state| {
-        let dpi_factor = NSWindow::backingScaleFactor(*state.nswindow) as f64;
+        let dpi_factor = unsafe {
+            NSWindow::backingScaleFactor(*state.nswindow)
+        } as f64;
         if state.previous_dpi_factor != dpi_factor {
             state.previous_dpi_factor = dpi_factor;
             state.emit_event(WindowEvent::HiDpiFactorChanged(dpi_factor));
@@ -341,7 +381,7 @@ extern fn window_did_enter_fullscreen(this: &Object, _: Sel, _: id){
             let monitor = window.get_current_monitor();
             window.shared_state.lock().unwrap().fullscreen = Some(monitor);
         });
-        state.handle_with_fullscreen = false;
+        state.initial_fullscreen = false;
     });
 }
 
@@ -376,15 +416,15 @@ extern fn window_did_exit_fullscreen(this: &Object, _: Sel, _: id){
 /// This method indicates that there was an error, and you should clean up any
 /// work you may have done to prepare to enter full-screen mode.
 extern fn window_did_fail_to_enter_fullscreen(this: &Object, _: Sel, _: id) {
-    with_state(this, |state| state.with_window(|window| {
-        if state.handle_with_fullscreen {
+    with_state(this, |state| {
+        if state.initial_fullscreen {
             let _: () = unsafe { msg_send![*state.nswindow,
                 performSelector:sel!(toggleFullScreen:)
                 withObject:nil
                 afterDelay: 0.5
             ] };
         } else {
-            window.restore_state_from_fullscreen();
+            state.with_window(|window| window.restore_state_from_fullscreen());
         }
-    }));
+    });
 }

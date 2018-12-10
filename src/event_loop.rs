@@ -41,8 +41,17 @@ pub struct EventLoop<T: 'static> {
 /// `EventLoop` will coerce into this type, so functions that take this as a parameter can also
 /// take `&EventLoop`.
 pub struct EventLoopWindowTarget<T: 'static> {
-    pub(crate) p: platform_impl::EventLoopWindowTarget<T>,
+    pub(crate) inner: platform_impl::EventLoopWindowTarget<T>,
     pub(crate) _marker: ::std::marker::PhantomData<*mut ()>, // Not Send nor Sync
+}
+
+impl<T> EventLoopWindowTarget<T> {
+    pub(crate) fn new(inner: platform_impl::EventLoopWindowTarget<T>) -> Self {
+        EventLoopWindowTarget {
+            inner,
+            _marker: Default::default(),
+        }
+    }
 }
 
 impl<T> fmt::Debug for EventLoop<T> {

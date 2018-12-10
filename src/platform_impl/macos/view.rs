@@ -22,7 +22,7 @@ use platform_impl::platform::{
         check_additional_virtual_key_codes, event_mods,
         PendingEvents, to_virtual_key_code,
     },
-    util::{self, IdRef}, ffi::*, window::get_window_id,
+    util::{self, Access, IdRef}, ffi::*, window::get_window_id,
 };
 
 struct ViewState {
@@ -33,10 +33,10 @@ struct ViewState {
     is_key_down: bool,
 }
 
-pub fn new_view(window: id, shared: Weak<Mutex<EventLoopAccess>>) -> IdRef {
+pub fn new_view(nswindow: id, pending_events: Weak<Mutex<PendingEvents>>) -> IdRef {
     let state = ViewState {
-        window,
-        shared,
+        nswindow,
+        pending_events,
         ime_spot: None,
         raw_characters: None,
         is_key_down: false,
@@ -44,18 +44,18 @@ pub fn new_view(window: id, shared: Weak<Mutex<EventLoopAccess>>) -> IdRef {
     unsafe {
         // This is free'd in `dealloc`
         let state_ptr = Box::into_raw(Box::new(state)) as *mut c_void;
-        let view: id = msg_send![VIEW_CLASS.0, alloc];
-        IdRef::new(msg_send![view, initWithWinit:state_ptr])
+        let nsview: id = msg_send![VIEW_CLASS.0, alloc];
+        IdRef::new(msg_send![nsview, initWithWinit:state_ptr])
     }
 }
 
-pub fn set_ime_spot(view: id, input_context: id, x: f64, y: f64) {
+pub fn set_ime_spot(nsview: id, input_context: id, x: f64, y: f64) {
     unsafe {
-        let state_ptr: *mut c_void = *(*view).get_mut_ivar("winitState");
+        let state_ptr: *mut c_void = *(*nsview).get_mut_ivar("winitState");
         let state = &mut *(state_ptr as *mut ViewState);
         let content_rect = NSWindow::contentRectForFrameRect_(
-            state.window,
-            NSWindow::frame(state.window),
+            state.nswindow,
+            NSWindow::frame(state.nswindow),
         );
         let base_x = content_rect.origin.x as f64;
         let base_y = (content_rect.origin.y + content_rect.size.height) as f64;
@@ -306,8 +306,8 @@ extern fn first_rect_for_character_range(
         let state = &mut *(state_ptr as *mut ViewState);
         let (x, y) = state.ime_spot.unwrap_or_else(|| {
             let content_rect = NSWindow::contentRectForFrameRect_(
-                state.window,
-                NSWindow::frame(state.window),
+                state.nswindow,
+                NSWindow::frame(state.nswindow),
             );
             let x = content_rect.origin.x;
             let y = util::bottom_left_to_top_left(content_rect);
@@ -349,17 +349,12 @@ extern fn insert_text(this: &Object, _sel: Sel, string: id, _replacement_range: 
         let mut events = VecDeque::with_capacity(characters.len());
         for character in string.chars() {
             events.push_back(Event::WindowEvent {
-                window_id: WindowId(get_window_id(state.window)),
+                window_id: WindowId(get_window_id(state.nswindow)),
                 event: WindowEvent::ReceivedCharacter(character),
             });
         }
 
-        if let Some(shared) = state.shared.upgrade() {
-            shared.pending_events
-                .lock()
-                .unwrap()
-                .append(&mut events);
-        }
+        state.pending_events.access(|pending| pending.queue_events(events));
     }
 }
 
@@ -371,19 +366,13 @@ extern fn do_command_by_selector(this: &Object, _sel: Sel, command: Sel) {
         let state_ptr: *mut c_void = *this.get_ivar("winitState");
         let state = &mut *(state_ptr as *mut ViewState);
 
-        let shared = if let Some(shared) = state.shared.upgrade() {
-            shared
-        } else {
-            return;
-        };
-
         let mut events = VecDeque::with_capacity(1);
         if command == sel!(insertNewline:) {
             // The `else` condition would emit the same character, but I'm keeping this here both...
             // 1) as a reminder for how `doCommandBySelector` works
             // 2) to make our use of carriage return explicit
             events.push_back(Event::WindowEvent {
-                window_id: WindowId(get_window_id(state.window)),
+                window_id: WindowId(get_window_id(state.nswindow)),
                 event: WindowEvent::ReceivedCharacter('\r'),
             });
         } else {
@@ -391,17 +380,14 @@ extern fn do_command_by_selector(this: &Object, _sel: Sel, command: Sel) {
             if let Some(raw_characters) = raw_characters {
                 for character in raw_characters.chars() {
                     events.push_back(Event::WindowEvent {
-                        window_id: WindowId(get_window_id(state.window)),
+                        window_id: WindowId(get_window_id(state.nswindow)),
                         event: WindowEvent::ReceivedCharacter(character),
                     });
                 }
             }
         };
 
-        shared.pending_events
-            .lock()
-            .unwrap()
-            .append(&mut events);
+        state.pending_events.access(|pending| pending.queue_events(events));
     }
 }
 
@@ -422,7 +408,7 @@ extern fn key_down(this: &Object, _sel: Sel, event: id) {
     unsafe {
         let state_ptr: *mut c_void = *this.get_ivar("winitState");
         let state = &mut *(state_ptr as *mut ViewState);
-        let window_id = WindowId(get_window_id(state.window));
+        let window_id = WindowId(get_window_id(state.nswindow));
 
         state.raw_characters = get_characters(event);
 
@@ -461,11 +447,8 @@ extern fn key_down(this: &Object, _sel: Sel, event: id) {
             Some(string.to_owned())
         };
 
-        if let Some(shared) = state.shared.upgrade() {
-            shared.pending_events
-                .lock()
-                .unwrap()
-                .push_back(window_event);
+        state.pending_events.access(|pending| {
+            pending.queue_event(window_event);
             // Emit `ReceivedCharacter` for key repeats
             if is_repeat && state.is_key_down{
                 for character in string.chars() {
@@ -473,19 +456,16 @@ extern fn key_down(this: &Object, _sel: Sel, event: id) {
                         window_id,
                         event: WindowEvent::ReceivedCharacter(character),
                     };
-                    shared.pending_events
-                        .lock()
-                        .unwrap()
-                        .push_back(window_event);
+                    pending.queue_event(window_event);
                 }
             } else {
                 // Some keys (and only *some*, with no known reason) don't trigger `insertText`, while others do...
                 // So, we don't give repeats the opportunity to trigger that, since otherwise our hack will cause some
                 // keys to generate twice as many characters.
                 let array: id = msg_send![class!(NSArray), arrayWithObject:event];
-                let (): _ = msg_send![this, interpretKeyEvents:array];
+                let _: () = msg_send![this, interpretKeyEvents:array];
             }
-        }
+        });
     }
 }
 
@@ -508,7 +488,7 @@ extern fn key_up(this: &Object, _sel: Sel, event: id) {
             });
         let scancode = keycode as u32;
         let window_event = Event::WindowEvent {
-            window_id: WindowId(get_window_id(state.window)),
+            window_id: WindowId(get_window_id(state.nswindow)),
             event: WindowEvent::KeyboardInput {
                 device_id: DEVICE_ID,
                 input: KeyboardInput {
@@ -520,12 +500,7 @@ extern fn key_up(this: &Object, _sel: Sel, event: id) {
             },
         };
 
-        if let Some(shared) = state.shared.upgrade() {
-            shared.pending_events
-                .lock()
-                .unwrap()
-                .push_back(window_event);
-        }
+        state.pending_events.access(|pending| pending.queue_event(window_event));
     }
 }
 
@@ -557,7 +532,7 @@ fn mouse_click(this: &Object, event: id, button: MouseButton, button_state: Elem
         let state = &mut *(state_ptr as *mut ViewState);
 
         let window_event = Event::WindowEvent {
-            window_id: WindowId(get_window_id(state.window)),
+            window_id: WindowId(get_window_id(state.nswindow)),
             event: WindowEvent::MouseInput {
                 device_id: DEVICE_ID,
                 state: button_state,
@@ -566,12 +541,7 @@ fn mouse_click(this: &Object, event: id, button: MouseButton, button_state: Elem
             },
         };
 
-        if let Some(shared) = state.shared.upgrade() {
-            shared.pending_events
-                .lock()
-                .unwrap()
-                .push_back(window_event);
-        }
+        state.pending_events.access(|pending| pending.queue_event(window_event));
     }
 }
 
@@ -623,7 +593,7 @@ fn mouse_motion(this: &Object, event: id) {
         let y = view_rect.size.height as f64 - view_point.y as f64;
 
         let window_event = Event::WindowEvent {
-            window_id: WindowId(get_window_id(state.window)),
+            window_id: WindowId(get_window_id(state.nswindow)),
             event: WindowEvent::CursorMoved {
                 device_id: DEVICE_ID,
                 position: (x, y).into(),
@@ -631,12 +601,7 @@ fn mouse_motion(this: &Object, event: id) {
             },
         };
 
-        if let Some(shared) = state.shared.upgrade() {
-            shared.pending_events
-                .lock()
-                .unwrap()
-                .push_back(window_event);
-        }
+        state.pending_events.access(|pending| pending.queue_event(window_event));
     }
 }
 

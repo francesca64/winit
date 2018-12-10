@@ -296,7 +296,7 @@ impl WindowBuilder {
 
         // building
         platform_impl::Window::new(
-            &window_target.p,
+            &window_target.inner,
             self.window,
             self.platform_specific,
         ).map(|window| Window { window })

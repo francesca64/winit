@@ -1,6 +1,6 @@
 use std::{
-    cell::Cell, collections::VecDeque, hint::unreachable_unchecked,
-    marker::PhantomData, os::raw::*, sync::{Arc, Mutex, Weak},
+    collections::VecDeque, hint::unreachable_unchecked,
+    marker::PhantomData, os::raw::*, process::exit, sync::{Arc, Mutex, Weak},
 };
 
 use cocoa::{
@@ -17,10 +17,12 @@ use {
         self, DeviceEvent, ElementState, Event, KeyboardInput,
         ModifiersState, TouchPhase, WindowEvent,
     },
-    event_loop::{ControlFlow, EventLoopClosed},
+    event_loop::{ControlFlow, EventLoopClosed, EventLoopWindowTarget as RootELW},
     window,
 };
-use super::{DeviceId, window::UnownedWindow};
+use platform_impl::platform::{
+    DEVICE_ID, monitor::{self, MonitorHandle}, window::UnownedWindow,
+};
 
 #[derive(Default)]
 struct Modifiers {
@@ -31,27 +33,35 @@ struct Modifiers {
 }
 
 // Change to `!` once stable
-enum Never {}
+pub enum Never {}
+
+impl Event<Never> {
+    fn userify<T: 'static>(self) -> Event<T> {
+        self.map_nonuser_event()
+            // `Never` can't be constructed, so the `UserEvent` variant can't
+            // be present here.
+            .unwrap_or_else(|_| unsafe { unreachable_unchecked() })
+    }
+}
 
 // State shared between the `EventLoop` and its registered windows and delegates.
 #[derive(Default)]
 pub struct PendingEvents {
-    inner: VecDeque<Event<Never>>,
+    pending: VecDeque<Event<Never>>,
 }
 
 impl PendingEvents {
     pub fn queue_event(&mut self, event: Event<Never>) {
-        self.inner.push_back(event);
+        self.pending.push_back(event);
     }
 
-    fn process_events<F: FnMut(Event<T>), T: 'static>(&mut self, callback: F) {
-        for event in self.inner.drain(0..) {
-            let event = event
-                .map_nonuser_event()
-                // `Never` can't be constructed, so the `UserEvent` variant can't
-                // be present here.
-                .unwrap_or_else(|_| unsafe { unreachable_unchecked() });
-            callback(event);
+    pub fn queue_events(&mut self, mut events: VecDeque<Event<Never>>) {
+        self.pending.append(&mut events);
+    }
+
+    fn process_events<F: FnMut(Event<T>), T: 'static>(&mut self, mut callback: F) {
+        for event in self.pending.drain(0..) {
+            callback(event.userify());
         }
     }
 }
@@ -79,17 +89,25 @@ impl WindowList {
     }
 }
 
-#[derive(Default)]
 pub struct EventLoopWindowTarget<T: 'static> {
     pub pending_events: Arc<Mutex<PendingEvents>>,
-    pub windows: Arc<Mutex<WindowList>>,
+    pub window_list: Arc<Mutex<WindowList>>,
     _marker: PhantomData<T>,
 }
 
-#[derive(Default)]
+impl<T> Default for EventLoopWindowTarget<T> {
+    fn default() -> Self {
+        EventLoopWindowTarget {
+            pending_events: Default::default(),
+            window_list: Default::default(),
+            _marker: PhantomData,
+        }
+    }
+}
+
 pub struct EventLoop<T: 'static> {
+    elw_target: RootELW<T>,
     modifiers: Modifiers,
-    elw_target: EventLoopWindowTarget<T>,
 }
 
 impl<T> EventLoop<T> {
@@ -100,11 +118,28 @@ impl<T> EventLoop<T> {
         // (e.g., via `EventLoopProxy::wakeup()`), causing a wrong thread to be
         // marked as the main thread.
         unsafe { NSApp() };
-        Default::default()
+        EventLoop {
+            elw_target: RootELW::new(Default::default()),
+            modifiers: Default::default(),
+        }
     }
 
-    pub fn poll_events<F>(&mut self, mut callback: F)
-        where F: FnMut(Event<T>, &EventLoopWindowTarget<T>, ControlFlow),
+    #[inline]
+    pub fn get_available_monitors(&self) -> VecDeque<MonitorHandle> {
+        monitor::get_available_monitors()
+    }
+
+    #[inline]
+    pub fn get_primary_monitor(&self) -> MonitorHandle {
+        monitor::get_primary_monitor()
+    }
+
+    pub fn window_target(&self) -> &RootELW<T> {
+        &self.elw_target
+    }
+
+    pub fn run<F>(mut self, mut callback: F) -> !
+        where F: 'static + FnMut(Event<T>, &RootELW<T>, &mut ControlFlow),
     {
         unsafe {
             if !msg_send![class!(NSThread), isMainThread] {
@@ -112,62 +147,21 @@ impl<T> EventLoop<T> {
             }
         }
 
-        // Loop as long as we have pending events to return.
-        loop {
-            unsafe {
-                self.elw_target.ev_access.lock().unwrap().process_events(|event| {
-                    callback(event);
-                });
-
-                let pool = NSAutoreleasePool::new(nil);
-
-                // Poll for the next event, returning `nil` if there are none.
-                let ns_event = NSApp().nextEventMatchingMask_untilDate_inMode_dequeue_(
-                    NSEventMask::NSAnyEventMask.bits() | NSEventMask::NSEventMaskPressure.bits(),
-                    NSDate::distantPast(nil),
-                    NSDefaultRunLoopMode,
-                    YES,
-                );
-
-                let event = self.ns_event_to_event(ns_event);
-
-                let _: () = msg_send![pool, release];
-
-                match event {
-                    Some(event) => callback(event),
-                    None => break,
-                }
-            }
-        }
-    }
-
-    pub fn run_forever<F>(&mut self, mut callback: F)
-        where F: FnMut(Event<T>, &EventLoopWindowTarget<T>, ControlFlow),
-    {
-        unsafe {
-            if !msg_send![class!(NSThread), isMainThread] {
-                panic!("Events can only be polled from the main thread on macOS");
-            }
-        }
-
-        // Track whether or not control flow has changed.
-        let control_flow = Cell::new(ControlFlow::Continue);
-
-        let mut callback = |event| {
-            if let ControlFlow::Break = callback(event) {
-                control_flow.set(ControlFlow::Break);
-            }
-        };
+        let mut control_flow = Default::default();
 
         loop {
-            unsafe {
-                self.elw_target.ev_access.lock().unwrap().process_events(|event| {
-                    callback(event);
+            self.elw_target.inner.pending_events
+                .lock()
+                .unwrap()
+                .process_events(|event| {
+                    callback(event, self.window_target(), &mut control_flow);
                 });
-                if let ControlFlow::Break = control_flow.get() {
-                    break;
-                }
 
+            if let ControlFlow::Exit = control_flow {
+                exit(0);
+            }
+
+            let maybe_event = unsafe {
                 let pool = NSAutoreleasePool::new(nil);
 
                 // Wait for the next event. Note that this function blocks during resize.
@@ -175,26 +169,35 @@ impl<T> EventLoop<T> {
                     NSEventMask::NSAnyEventMask.bits() | NSEventMask::NSEventMaskPressure.bits(),
                     NSDate::distantFuture(nil),
                     NSDefaultRunLoopMode,
-                    YES);
+                    YES,
+                );
 
-                let maybe_event = self.ns_event_to_event(ns_event);
+                let maybe_event = self.translate_event(ns_event);
 
                 // Release the pool before calling the top callback in case the user calls either
                 // `run_forever` or `poll_events` within the callback.
                 let _: () = msg_send![pool, release];
 
-                if let Some(event) = maybe_event {
-                    callback(event);
-                    if let ControlFlow::Break = control_flow.get() {
-                        break;
-                    }
+                maybe_event
+            };
+
+            if let Some(event) = maybe_event {
+                callback(event.userify(), self.window_target(), &mut control_flow);
+                if let ControlFlow::Exit = control_flow {
+                    exit(0);
                 }
             }
         }
     }
 
-    // Convert some given `NSEvent` into a winit `Event`.
-    unsafe fn ns_event_to_event(&mut self, ns_event: id) -> Option<Event<T>> {
+    pub fn run_return<F>(&mut self, _callback: F)
+        where F: FnMut(Event<T>, &RootELW<T>, &mut ControlFlow),
+    {
+        unimplemented!();
+    }
+
+    // Converts an `NSEvent` to a winit `Event`.
+    unsafe fn translate_event(&mut self, ns_event: id) -> Option<Event<Never>> {
         if ns_event == nil {
             return None;
         }
@@ -217,8 +220,10 @@ impl<T> EventLoop<T> {
         // If we don't do this, window does not become main for some reason.
         NSApp().sendEvent_(ns_event);
 
-        let windows = self.shared.windows.lock().unwrap();
-        let maybe_window = windows.iter()
+        let windows = self.elw_target.inner.window_list.lock().unwrap();
+        let maybe_window = (*windows)
+            .windows
+            .iter()
             .filter_map(Weak::upgrade)
             .find(|window| window_id == window.id());
 
@@ -228,10 +233,12 @@ impl<T> EventLoop<T> {
         };
 
         // Returns `Some` window if one of our windows is the key window.
-        let maybe_key_window = || windows.iter()
+        let maybe_key_window = || (*windows)
+            .windows
+            .iter()
             .filter_map(Weak::upgrade)
             .find(|window| {
-                let is_key_window: BOOL = msg_send![*window.window, isKeyWindow];
+                let is_key_window: BOOL = msg_send![*window.nswindow, isKeyWindow];
                 is_key_window == YES
             });
 
@@ -240,7 +247,7 @@ impl<T> EventLoop<T> {
             appkit::NSKeyUp  => {
                 if let Some(key_window) = maybe_key_window() {
                     if event_mods(ns_event).logo {
-                        let _: () = msg_send![*key_window.window, sendEvent:ns_event];
+                        let _: () = msg_send![*key_window.nswindow, sendEvent:ns_event];
                     }
                 }
                 None
@@ -297,10 +304,10 @@ impl<T> EventLoop<T> {
                 }
 
                 let event = events.pop_front();
-                self.shared.pending_events
+                self.elw_target.inner.pending_events
                     .lock()
                     .unwrap()
-                    .extend(events.into_iter());
+                    .queue_events(events);
                 event
             },
 
@@ -314,13 +321,13 @@ impl<T> EventLoop<T> {
                 let view_point = if ns_window == nil {
                     let ns_size = NSSize::new(0.0, 0.0);
                     let ns_rect = NSRect::new(window_point, ns_size);
-                    let window_rect = window.window.convertRectFromScreen_(ns_rect);
-                    window.view.convertPoint_fromView_(window_rect.origin, nil)
+                    let window_rect = window.nswindow.convertRectFromScreen_(ns_rect);
+                    window.nsview.convertPoint_fromView_(window_rect.origin, nil)
                 } else {
-                    window.view.convertPoint_fromView_(window_point, nil)
+                    window.nsview.convertPoint_fromView_(window_point, nil)
                 };
 
-                let view_rect = NSView::frame(*window.view);
+                let view_rect = NSView::frame(*window.nsview);
                 let x = view_point.x as f64;
                 let y = (view_rect.size.height - view_point.y) as f64;
                 let window_event = WindowEvent::CursorMoved {
@@ -329,7 +336,10 @@ impl<T> EventLoop<T> {
                     modifiers: event_mods(ns_event),
                 };
                 let event = Event::WindowEvent { window_id: window::WindowId(window.id()), event: window_event };
-                self.shared.pending_events.lock().unwrap().push_back(event);
+                self.elw_target.inner.pending_events
+                    .lock()
+                    .unwrap()
+                    .queue_event(event);
                 Some(into_event(WindowEvent::CursorEntered { device_id: DEVICE_ID }))
             },
             appkit::NSMouseExited => { Some(into_event(WindowEvent::CursorLeft { device_id: DEVICE_ID })) },
@@ -369,7 +379,10 @@ impl<T> EventLoop<T> {
                 }
 
                 let event = events.pop_front();
-                self.ev_access.pending_events.lock().unwrap().extend(events.into_iter());
+                self.elw_target.inner.pending_events
+                    .lock()
+                    .unwrap()
+                    .queue_events(events);
                 event
             },
 
@@ -397,7 +410,7 @@ impl<T> EventLoop<T> {
                     NSEventPhase::NSEventPhaseEnded => TouchPhase::Ended,
                     _ => TouchPhase::Moved,
                 };
-                self.shared.pending_events.lock().unwrap().push_back(Event::DeviceEvent {
+                self.elw_target.inner.pending_events.lock().unwrap().queue_event(Event::DeviceEvent {
                     device_id: DEVICE_ID,
                     event: DeviceEvent::MouseWheel {
                         delta: if ns_event.hasPreciseScrollingDeltas() == YES {
@@ -435,7 +448,7 @@ impl<T> EventLoop<T> {
 
             NSApplicationDefined => match ns_event.subtype() {
                 NSEventSubtype::NSApplicationActivatedEventType => {
-                    Some(Event::Awakened)
+                    unimplemented!();
                 },
                 _ => None,
             },
@@ -449,13 +462,21 @@ impl<T> EventLoop<T> {
     }
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct Proxy<T> {
     _marker: PhantomData<T>,
 }
 
+impl<T> Default for Proxy<T> {
+    fn default() -> Self {
+        Proxy { _marker: PhantomData }
+    }
+}
+
 impl<T> Proxy<T> {
-    pub fn wakeup(&self) -> Result<(), EventLoopClosed> {
+    #[allow(unreachable_code)]
+    pub fn send_event(&self, event: T) -> Result<(), EventLoopClosed> {
+        unimplemented!();
         // Awaken the event loop by triggering `NSApplicationActivatedEventType`.
         unsafe {
             let pool = NSAutoreleasePool::new(nil);

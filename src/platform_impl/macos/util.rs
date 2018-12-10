@@ -64,11 +64,11 @@ impl Clone for IdRef {
 }
 
 pub trait Access<T> {
-    fn access<F: Fn(&mut T) -> O, O>(&self, callback: F) -> Option<O>;
+    fn access<F: FnOnce(&mut T) -> O, O>(&self, callback: F) -> Option<O>;
 }
 
 impl<T> Access<T> for Arc<Mutex<T>> {
-    fn access<F: Fn(&mut T) -> O, O>(&self, callback: F) -> Option<O> {
+    fn access<F: FnOnce(&mut T) -> O, O>(&self, callback: F) -> Option<O> {
         self.lock()
             .ok()
             .map(|ref mut mutex_guard| callback(mutex_guard))
@@ -76,7 +76,7 @@ impl<T> Access<T> for Arc<Mutex<T>> {
 }
 
 impl<T> Access<T> for Weak<Mutex<T>> {
-    fn access<F: Fn(&mut T) -> O, O>(&self, callback: F) -> Option<O> {
+    fn access<F: FnOnce(&mut T) -> O, O>(&self, callback: F) -> Option<O> {
         self.upgrade()
             .and_then(|arc| arc.access(callback))
     }

@@ -1,23 +1,19 @@
 use std::{collections::VecDeque, fmt};
 
-use cocoa::{
-    appkit::NSScreen,
-    base::{id, nil},
-    foundation::{NSString, NSUInteger},
-};
+use cocoa::{appkit::NSScreen, base::{id, nil}, foundation::{NSString, NSUInteger}};
 use core_graphics::display::{CGDirectDisplayID, CGDisplay, CGDisplayBounds};
 
 use dpi::{PhysicalPosition, PhysicalSize};
-use super::{event_loop::EventLoop, util::IdRef, window::UnownedWindow};
+use platform_impl::platform::util::IdRef;
 
 #[derive(Clone, PartialEq)]
 pub struct MonitorHandle(CGDirectDisplayID);
 
-fn get_available_monitors() -> VecDeque<MonitorHandle> {
+pub fn get_available_monitors() -> VecDeque<MonitorHandle> {
     if let Ok(displays) = CGDisplay::active_displays() {
         let mut monitors = VecDeque::with_capacity(displays.len());
-        for d in displays {
-            monitors.push_back(MonitorHandle(d));
+        for display in displays {
+            monitors.push_back(MonitorHandle(display));
         }
         monitors
     } else {
@@ -27,35 +23,6 @@ fn get_available_monitors() -> VecDeque<MonitorHandle> {
 
 pub fn get_primary_monitor() -> MonitorHandle {
     MonitorHandle(CGDisplay::main().id)
-}
-
-impl<T: 'static> EventLoop<T> {
-    #[inline]
-    pub fn get_available_monitors(&self) -> VecDeque<MonitorHandle> {
-        get_available_monitors()
-    }
-
-    #[inline]
-    pub fn get_primary_monitor(&self) -> MonitorHandle {
-        get_primary_monitor()
-    }
-
-    pub fn make_monitor_from_display(id: CGDirectDisplayID) -> MonitorHandle {
-        let id = MonitorHandle(id);
-        id
-    }
-}
-
-impl UnownedWindow {
-    #[inline]
-    pub fn get_available_monitors(&self) -> VecDeque<MonitorHandle> {
-        get_available_monitors()
-    }
-
-    #[inline]
-    pub fn get_primary_monitor(&self) -> MonitorHandle {
-        get_primary_monitor()
-    }
 }
 
 impl fmt::Debug for MonitorHandle {
@@ -83,6 +50,10 @@ impl fmt::Debug for MonitorHandle {
 }
 
 impl MonitorHandle {
+    pub fn new(id: CGDirectDisplayID) -> Self {
+        MonitorHandle(id)
+    }
+
     pub fn get_name(&self) -> Option<String> {
         let MonitorHandle(display_id) = *self;
         let screen_num = CGDisplay::new(display_id).model_number();
