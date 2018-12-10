@@ -447,7 +447,7 @@ extern fn key_down(this: &Object, _sel: Sel, event: id) {
             Some(string.to_owned())
         };
 
-        state.pending_events.access(|pending| {
+        let pass_along = state.pending_events.access(|pending| {
             pending.queue_event(window_event);
             // Emit `ReceivedCharacter` for key repeats
             if is_repeat && state.is_key_down{
@@ -458,14 +458,19 @@ extern fn key_down(this: &Object, _sel: Sel, event: id) {
                     };
                     pending.queue_event(window_event);
                 }
+                false
             } else {
-                // Some keys (and only *some*, with no known reason) don't trigger `insertText`, while others do...
-                // So, we don't give repeats the opportunity to trigger that, since otherwise our hack will cause some
-                // keys to generate twice as many characters.
-                let array: id = msg_send![class!(NSArray), arrayWithObject:event];
-                let _: () = msg_send![this, interpretKeyEvents:array];
+                true
             }
         });
+
+        if let Some(true) = pass_along {
+            // Some keys (and only *some*, with no known reason) don't trigger `insertText`, while others do...
+            // So, we don't give repeats the opportunity to trigger that, since otherwise our hack will cause some
+            // keys to generate twice as many characters.
+            let array: id = msg_send![class!(NSArray), arrayWithObject:event];
+            let _: () = msg_send![this, interpretKeyEvents:array];
+        }
     }
 }
 
