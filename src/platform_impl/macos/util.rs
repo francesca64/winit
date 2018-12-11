@@ -89,11 +89,12 @@ pub fn bottom_left_to_top_left(rect: NSRect) -> f64 {
     CGDisplay::main().pixels_high() as f64 - (rect.origin.y + rect.size.height)
 }
 
-pub unsafe fn set_style_mask(window: id, view: id, mask: NSWindowStyleMask) {
+pub unsafe fn set_style_mask(nswindow: id, nsview: id, mask: NSWindowStyleMask) {
+    trace!("`set_style_mask` {:?} {:?} {:?}", nswindow, nsview, mask);
     use cocoa::appkit::NSWindow;
-    window.setStyleMask_(mask);
+    nswindow.setStyleMask_(mask);
     // If we don't do this, key handling will break. Therefore, never call `setStyleMask` directly!
-    window.makeFirstResponder_(view);
+    nswindow.makeFirstResponder_(nsview);
 }
 
 pub unsafe fn create_input_context(view: id) -> IdRef {

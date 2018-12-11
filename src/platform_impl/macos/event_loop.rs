@@ -1,6 +1,6 @@
 use std::{
-    collections::VecDeque, hint::unreachable_unchecked,
-    marker::PhantomData, os::raw::*, process::exit, sync::{Arc, Mutex, Weak},
+    collections::VecDeque, hint::unreachable_unchecked, marker::PhantomData,
+    mem, os::raw::*, process::exit, sync::{Arc, Mutex, Weak},
 };
 
 use cocoa::{
@@ -15,7 +15,7 @@ use cocoa::{
 use {
     event::{
         self, DeviceEvent, ElementState, Event, KeyboardInput,
-        ModifiersState, TouchPhase, WindowEvent,
+        ModifiersState, StartCause, TouchPhase, WindowEvent,
     },
     event_loop::{ControlFlow, EventLoopClosed, EventLoopWindowTarget as RootELW},
     window,
@@ -59,10 +59,8 @@ impl PendingEvents {
         self.pending.append(&mut events);
     }
 
-    fn process_events<F: FnMut(Event<T>), T: 'static>(&mut self, mut callback: F) {
-        for event in self.pending.drain(0..) {
-            callback(event.userify());
-        }
+    fn take(&mut self) -> VecDeque<Event<Never>> {
+        mem::replace(&mut self.pending, Default::default())
     }
 }
 
@@ -148,17 +146,27 @@ impl<T> EventLoop<T> {
         }
 
         let mut control_flow = Default::default();
+        let mut cause = StartCause::Init;
 
         loop {
-            self.elw_target.inner.pending_events
-                .lock()
-                .unwrap()
-                .process_events(|event| {
-                    callback(event, self.window_target(), &mut control_flow);
-                });
+            callback(Event::NewEvents(cause), self.window_target(), &mut control_flow);
 
-            if let ControlFlow::Exit = control_flow {
-                exit(0);
+            {
+                trace!("Locked pending events in `run`");
+                let mut pending = self.elw_target
+                    .inner
+                    .pending_events
+                    .lock()
+                    .unwrap()
+                    .take();
+                trace!("Unlocked pending events in `run`");
+                for event in pending.drain(0..) {
+                    callback(
+                        event.userify(),
+                        self.window_target(),
+                        &mut control_flow,
+                    );
+                }
             }
 
             let maybe_event = unsafe {
@@ -183,10 +191,16 @@ impl<T> EventLoop<T> {
 
             if let Some(event) = maybe_event {
                 callback(event.userify(), self.window_target(), &mut control_flow);
-                if let ControlFlow::Exit = control_flow {
-                    exit(0);
-                }
             }
+
+            callback(Event::EventsCleared, self.window_target(), &mut control_flow);
+
+            if let ControlFlow::Exit = control_flow {
+                callback(Event::LoopDestroyed, self.window_target(), &mut control_flow);
+                exit(0);
+            }
+
+            cause = StartCause::Poll;
         }
     }
 
@@ -304,10 +318,12 @@ impl<T> EventLoop<T> {
                 }
 
                 let event = events.pop_front();
+                trace!("Locked pending events in `translate_event`");
                 self.elw_target.inner.pending_events
                     .lock()
                     .unwrap()
                     .queue_events(events);
+                trace!("Unlocked pending events in `translate_event`");
                 event
             },
 
@@ -336,10 +352,12 @@ impl<T> EventLoop<T> {
                     modifiers: event_mods(ns_event),
                 };
                 let event = Event::WindowEvent { window_id: window::WindowId(window.id()), event: window_event };
+                trace!("Locked pending events in `translate_event`");
                 self.elw_target.inner.pending_events
                     .lock()
                     .unwrap()
                     .queue_event(event);
+                trace!("Unlocked pending events in `translate_event`");
                 Some(into_event(WindowEvent::CursorEntered { device_id: DEVICE_ID }))
             },
             appkit::NSMouseExited => { Some(into_event(WindowEvent::CursorLeft { device_id: DEVICE_ID })) },
@@ -379,10 +397,12 @@ impl<T> EventLoop<T> {
                 }
 
                 let event = events.pop_front();
+                trace!("Locked pending events in `translate_event`");
                 self.elw_target.inner.pending_events
                     .lock()
                     .unwrap()
                     .queue_events(events);
+                trace!("Unlocked pending events in `translate_event`");
                 event
             },
 
@@ -410,6 +430,7 @@ impl<T> EventLoop<T> {
                     NSEventPhase::NSEventPhaseEnded => TouchPhase::Ended,
                     _ => TouchPhase::Moved,
                 };
+                trace!("Locked pending events in `translate_event`");
                 self.elw_target.inner.pending_events.lock().unwrap().queue_event(Event::DeviceEvent {
                     device_id: DEVICE_ID,
                     event: DeviceEvent::MouseWheel {
@@ -426,6 +447,7 @@ impl<T> EventLoop<T> {
                         },
                     }
                 });
+                trace!("Unlocked pending events in `translate_event`");
                 let window_event = WindowEvent::MouseWheel {
                     device_id: DEVICE_ID,
                     delta,

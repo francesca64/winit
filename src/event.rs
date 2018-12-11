@@ -80,7 +80,7 @@ pub enum StartCause {
     Poll,
 
     /// Sent once, immediately after `run` is called. Indicates that the loop was just initialized.
-    Init
+    Init,
 }
 
 /// Describes an event from a `Window`.

@@ -138,7 +138,7 @@ impl WindowBuilderExtMacOS for WindowBuilder {
     }
 }
 
-/// Additional methods on `MonitorHandle` that are specific to MacOS.
+/// Additional methods on `MonitorHandle` that are specific to macOS.
 pub trait MonitorHandleExtMacOS {
     /// Returns the identifier of the monitor for Cocoa.
     fn native_id(&self) -> u32;

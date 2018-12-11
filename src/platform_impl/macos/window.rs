@@ -450,6 +450,7 @@ impl UnownedWindow {
 
     #[inline]
     pub fn set_resizable(&self, resizable: bool) {
+        trace!("Locked shared state in `set_resizable`");
         let mut shared_state_lock = self.shared_state.lock().unwrap();
         shared_state_lock.resizable = resizable;
         if shared_state_lock.fullscreen.is_none() {
@@ -461,6 +462,7 @@ impl UnownedWindow {
             }
             unsafe { util::set_style_mask(*self.nswindow, *self.nsview, mask) };
         } // Otherwise, we don't change the mask until we exit fullscreen.
+        trace!("Unlocked shared state in `set_decorations`");
     }
 
     pub fn set_cursor(&self, cursor: MouseCursor) {
@@ -569,7 +571,8 @@ impl UnownedWindow {
     }
 
     pub(crate) fn restore_state_from_fullscreen(&self) {
-        self.set_maximized({
+        let maximized = {
+            trace!("Locked shared state in `restore_state_from_fullscreen`");
             let mut shared_state_lock = self.shared_state.lock().unwrap();
 
             shared_state_lock.fullscreen = None;
@@ -586,9 +589,10 @@ impl UnownedWindow {
             };
 
             unsafe { util::set_style_mask(*self.nswindow, *self.nsview, mask) };
-
             shared_state_lock.maximized
-        });
+        };
+        trace!("Unocked shared state in `restore_state_from_fullscreen`");
+        self.set_maximized(maximized);
     }
 
     #[inline]
@@ -596,6 +600,7 @@ impl UnownedWindow {
         let is_zoomed = self.is_zoomed();
         if is_zoomed == maximized { return };
 
+        trace!("Locked shared state in `set_maximized`");
         let mut shared_state_lock = self.shared_state.lock().unwrap();
 
         // Save the standard frame sized if it is not zoomed
@@ -629,47 +634,51 @@ impl UnownedWindow {
                 self.nswindow.setFrame_display_(new_rect, 0);
             }
         }
+
+        trace!("Unlocked shared state in `set_maximized`");
     }
 
     /// TODO: Right now set_fullscreen do not work on switching monitors
     /// in fullscreen mode
     #[inline]
     pub fn set_fullscreen(&self, monitor: Option<RootMonitorHandle>) {
+        trace!("Locked shared state in `set_fullscreen`");
         let mut shared_state_lock = self.shared_state.lock().unwrap();
 
-        let current = {
-            let current = shared_state_lock.fullscreen.clone();
-            match (&current, monitor) {
-                (&None, None) => {
-                    return;
-                }
+        let not_fullscreen = {
+            let current = &shared_state_lock.fullscreen;
+            match (current, monitor) {
+                (&None, None) => { return },
                 (&Some(ref a), Some(ref b)) if a.inner != b.inner => {
                     unimplemented!();
                 }
-                (&Some(_), Some(_)) => {
-                    return;
-                }
+                (&Some(_), Some(_)) => { return },
                 _ => (),
             }
-
-            current
+            current.is_none()
         };
 
-        unsafe {
-            // Because toggleFullScreen will not work if the StyleMask is none,
-            // We set a normal style to it temporary.
-            // It will clean up at window_did_exit_fullscreen.
-            if current.is_none() {
-                let curr_mask = self.nswindow.styleMask();
-                let required = NSWindowStyleMask::NSTitledWindowMask
-                    | NSWindowStyleMask::NSResizableWindowMask;
-                if !curr_mask.contains(required) {
-                    util::set_style_mask(*self.nswindow, *self.nsview, required);
-                    shared_state_lock.saved_style = Some(curr_mask);
-                }
+        // Because toggleFullScreen will not work if the StyleMask is none,
+        // We set a normal style to it temporary.
+        // It will clean up at window_did_exit_fullscreen.
+        if not_fullscreen {
+            let curr_mask = unsafe { self.nswindow.styleMask() };
+            let required = NSWindowStyleMask::NSTitledWindowMask
+                | NSWindowStyleMask::NSResizableWindowMask;
+            if !curr_mask.contains(required) {
+                unsafe { util::set_style_mask(
+                    *self.nswindow,
+                    *self.nsview,
+                    required,
+                ) };
+                shared_state_lock.saved_style = Some(curr_mask);
             }
-            self.nswindow.toggleFullScreen_(nil);
         }
+
+        drop(shared_state_lock);
+        trace!("Unlocked shared state in `set_fullscreen`");
+
+        unsafe { self.nswindow.toggleFullScreen_(nil) };
     }
 
     #[inline]
@@ -677,6 +686,7 @@ impl UnownedWindow {
         if decorations != self.decorations.load(Ordering::Acquire) {
             self.decorations.store(decorations, Ordering::Release);
 
+            trace!("Locked shared state in `set_decorations`");
             let shared_state_lock = self.shared_state.lock().unwrap();
 
             // Don't apply yet if we're in fullscreen mode.
@@ -698,6 +708,8 @@ impl UnownedWindow {
                 }
                 util::set_style_mask(*self.nswindow, *self.nsview, new_mask);
             }
+
+            trace!("Unlocked shared state in `set_decorations`");
         }
     }
 
@@ -778,6 +790,8 @@ impl WindowExtMacOS for UnownedWindow {
 
 impl Drop for UnownedWindow {
     fn drop(&mut self) {
+        trace!("Dropping `UnownedWindow` ({:?})", self as *mut _);
+
         let id = self.id();
         self.window_list.access(|windows| windows.remove_window(id));
 

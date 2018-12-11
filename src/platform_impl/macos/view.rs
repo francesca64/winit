@@ -216,7 +216,7 @@ extern fn init_with_winit(this: &Object, _sel: Sel, state: *mut c_void) -> id {
 }
 
 extern fn has_marked_text(this: &Object, _sel: Sel) -> BOOL {
-    debug!("hasMarkedText");
+    trace!("Triggered `hasMarkedText`");
     unsafe {
         let marked_text: id = *this.get_ivar("markedText");
         (marked_text.length() > 0) as i8
@@ -224,7 +224,7 @@ extern fn has_marked_text(this: &Object, _sel: Sel) -> BOOL {
 }
 
 extern fn marked_range(this: &Object, _sel: Sel) -> NSRange {
-    debug!("markedRange");
+    trace!("Triggered `markedRange`");
     unsafe {
         let marked_text: id = *this.get_ivar("markedText");
         let length = marked_text.length();
@@ -237,7 +237,7 @@ extern fn marked_range(this: &Object, _sel: Sel) -> NSRange {
 }
 
 extern fn selected_range(_this: &Object, _sel: Sel) -> NSRange {
-    debug!("selectedRange");
+    trace!("Triggered `selectedRange`");
     util::EMPTY_RANGE
 }
 
@@ -248,7 +248,7 @@ extern fn set_marked_text(
     _selected_range: NSRange,
     _replacement_range: NSRange,
 ) {
-    debug!("setMarkedText");
+    trace!("Triggered `setMarkedText`");
     unsafe {
         let marked_text_ref: &mut id = this.get_mut_ivar("markedText");
         let _: () = msg_send![(*marked_text_ref), release];
@@ -264,7 +264,7 @@ extern fn set_marked_text(
 }
 
 extern fn unmark_text(this: &Object, _sel: Sel) {
-    debug!("unmarkText");
+    trace!("Triggered `unmarkText`");
     unsafe {
         let marked_text: id = *this.get_ivar("markedText");
         let mutable_string = marked_text.mutableString();
@@ -275,7 +275,7 @@ extern fn unmark_text(this: &Object, _sel: Sel) {
 }
 
 extern fn valid_attributes_for_marked_text(_this: &Object, _sel: Sel) -> id {
-    debug!("validAttributesForMarkedText");
+    trace!("Triggered `validAttributesForMarkedText`");
     unsafe { msg_send![class!(NSArray), array] }
 }
 
@@ -285,12 +285,12 @@ extern fn attributed_substring_for_proposed_range(
     _range: NSRange,
     _actual_range: *mut c_void, // *mut NSRange
 ) -> id {
-    debug!("attributedSubstringForProposedRange");
+    trace!("Triggered `attributedSubstringForProposedRange`");
     nil
 }
 
 extern fn character_index_for_point(_this: &Object, _sel: Sel, _point: NSPoint) -> NSUInteger {
-    debug!("characterIndexForPoint");
+    trace!("Triggered `characterIndexForPoint`");
     0
 }
 
@@ -300,7 +300,7 @@ extern fn first_rect_for_character_range(
     _range: NSRange,
     _actual_range: *mut c_void, // *mut NSRange
 ) -> NSRect {
-    debug!("firstRectForCharacterRange");
+    trace!("Triggered `firstRectForCharacterRange`");
     unsafe {
         let state_ptr: *mut c_void = *this.get_ivar("winitState");
         let state = &mut *(state_ptr as *mut ViewState);
@@ -322,7 +322,7 @@ extern fn first_rect_for_character_range(
 }
 
 extern fn insert_text(this: &Object, _sel: Sel, string: id, _replacement_range: NSRange) {
-    debug!("insertText");
+    trace!("Triggered `insertText`");
     unsafe {
         let state_ptr: *mut c_void = *this.get_ivar("winitState");
         let state = &mut *(state_ptr as *mut ViewState);
@@ -359,7 +359,7 @@ extern fn insert_text(this: &Object, _sel: Sel, string: id, _replacement_range: 
 }
 
 extern fn do_command_by_selector(this: &Object, _sel: Sel, command: Sel) {
-    debug!("doCommandBySelector");
+    trace!("Triggered `doCommandBySelector`");
     // Basically, we're sent this message whenever a keyboard event that doesn't generate a "human readable" character
     // happens, i.e. newlines, tabs, and Ctrl+C.
     unsafe {
@@ -404,7 +404,7 @@ fn get_characters(event: id) -> Option<String> {
 }
 
 extern fn key_down(this: &Object, _sel: Sel, event: id) {
-    debug!("keyDown");
+    trace!("Triggered `keyDown`");
     unsafe {
         let state_ptr: *mut c_void = *this.get_ivar("winitState");
         let state = &mut *(state_ptr as *mut ViewState);
@@ -440,7 +440,7 @@ extern fn key_down(this: &Object, _sel: Sel, event: id) {
         let slice = slice::from_raw_parts(
             characters.UTF8String() as *const c_uchar,
             characters.len(),
-            );
+        );
         let string = str::from_utf8_unchecked(slice);
 
         state.raw_characters = {
@@ -475,7 +475,7 @@ extern fn key_down(this: &Object, _sel: Sel, event: id) {
 }
 
 extern fn key_up(this: &Object, _sel: Sel, event: id) {
-    debug!("keyUp");
+    trace!("Triggered `keyUp`");
     unsafe {
         let state_ptr: *mut c_void = *this.get_ivar("winitState");
         let state = &mut *(state_ptr as *mut ViewState);
