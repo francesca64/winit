@@ -1,6 +1,7 @@
 use std::{
-    collections::VecDeque, hint::unreachable_unchecked, marker::PhantomData,
-    mem, os::raw::*, process::exit, sync::{Arc, Mutex, Weak},
+    collections::VecDeque, fmt::{self, Debug, Formatter},
+    hint::unreachable_unchecked, marker::PhantomData, mem, os::raw::*,
+    process::exit, sync::{Arc, Mutex, Weak},
 };
 
 use cocoa::{
@@ -21,7 +22,9 @@ use {
     window,
 };
 use platform_impl::platform::{
-    DEVICE_ID, monitor::{self, MonitorHandle}, window::UnownedWindow,
+    app_delegate::APP_DELEGATE_CLASS, DEVICE_ID, monitor::{self, MonitorHandle},
+    observer::{EventLoopWaker, setup_control_flow_observers},
+    util::IdRef, window::UnownedWindow,
 };
 
 #[derive(Default)]
@@ -87,6 +90,118 @@ impl WindowList {
     }
 }
 
+lazy_static! {
+    pub static ref HANDLER: Mutex<Handler> = Default::default();
+}
+
+#[derive(Default)]
+pub struct Handler {
+    control_flow: ControlFlow,
+    control_flow_prev: ControlFlow,
+    callback: Option<Box<dyn EventHandler>>,
+    waker: EventLoopWaker,
+}
+
+unsafe impl Send for Handler {}
+unsafe impl Sync for Handler {}
+
+impl Handler {
+    pub fn launched(&mut self) {
+        self.waker.start();
+        if let Some(ref mut callback) = self.callback {
+            callback.handle_nonuser_event(Event::NewEvents(StartCause::Init), &mut self.control_flow);
+        }
+    }
+
+    pub fn wakeup(&mut self) {
+        self.control_flow_prev = self.control_flow;
+        let cause = match self.control_flow {
+            ControlFlow::Poll => StartCause::Poll,
+            /*ControlFlow::Wait => StartCause::WaitCancelled {
+                start,
+                requested_resume: None,
+            },
+            ControlFlow::WaitUntil(requested_resume) => {
+                if Instant::now() >= requested_resume {
+                    StartCause::ResumeTimeReached {
+                        start,
+                        requested_resume,
+                    }
+                } else {
+                    StartCause::WaitCancelled {
+                        start,
+                        requested_resume: Some(requested_resume),
+                    }
+                }
+            },*/
+            ControlFlow::Exit => panic!("unexpected `ControlFlow::Exit`"),
+            _ => unimplemented!(),
+        };
+        if let Some(ref mut callback) = self.callback {
+            callback.handle_nonuser_event(Event::NewEvents(cause), &mut self.control_flow);
+        }
+    }
+
+    pub fn cleared(&mut self) {
+        if let Some(ref mut callback) = self.callback {
+            callback.handle_nonuser_event(Event::EventsCleared, &mut self.control_flow);
+        }
+        let old = self.control_flow_prev;
+        let new = self.control_flow;
+        match (old, new) {
+            (ControlFlow::Poll, ControlFlow::Poll) => (),
+            (ControlFlow::Wait, ControlFlow::Wait) => (),
+            (ControlFlow::WaitUntil(old_instant), ControlFlow::WaitUntil(new_instant)) if old_instant == new_instant => (),
+            (_, ControlFlow::Wait) => self.waker.stop(),
+            (_, ControlFlow::WaitUntil(new_instant)) => self.waker.start_at(new_instant),
+            (_, ControlFlow::Poll) => self.waker.start(),
+            (_, ControlFlow::Exit) => (),
+        }
+    }
+}
+
+pub trait EventHandler: Debug {
+    fn handle_nonuser_event(&mut self, event: Event<Never>, control_flow: &mut ControlFlow);
+    //fn handle_user_events(&mut self, control_flow: &mut ControlFlow);
+}
+
+struct EventLoopHandler<F, T: 'static> {
+    callback: F,
+    event_loop: RootELW<T>,
+}
+
+impl<F, T: 'static> Debug for EventLoopHandler<F, T> {
+    fn fmt(&self, formatter: &mut Formatter) -> fmt::Result {
+        formatter.debug_struct("EventLoopHandler")
+            .field("event_loop", &self.event_loop)
+            .finish()
+    }
+}
+
+impl<F, T> EventHandler for EventLoopHandler<F, T>
+where
+    F: 'static + FnMut(Event<T>, &RootELW<T>, &mut ControlFlow),
+    T: 'static,
+{
+    fn handle_nonuser_event(&mut self, event: Event<Never>, control_flow: &mut ControlFlow) {
+        (self.callback)(
+            event.userify(),
+            &self.event_loop,
+            control_flow,
+        );
+    }
+
+    /*fn handle_user_events(&mut self, control_flow: &mut ControlFlow) {
+        for event in self.event_loop.inner.receiver.try_iter() {
+            (self.callback)(
+                Event::UserEvent(event),
+                &self.event_loop,
+                control_flow,
+            );
+        }
+    }*/
+}
+
 pub struct EventLoopWindowTarget<T: 'static> {
     pub pending_events: Arc<Mutex<PendingEvents>>,
     pub window_list: Arc<Mutex<WindowList>>,
@@ -105,19 +220,35 @@ impl<T> Default for EventLoopWindowTarget<T> {
 
 pub struct EventLoop<T: 'static> {
     elw_target: RootELW<T>,
+    delegate: IdRef,
     modifiers: Modifiers,
 }
 
 impl<T> EventLoop<T> {
     pub fn new() -> Self {
-        // Mark this thread as the main thread of the Cocoa event system.
-        //
-        // This must be done before any worker threads get a chance to call it
-        // (e.g., via `EventLoopProxy::wakeup()`), causing a wrong thread to be
-        // marked as the main thread.
-        unsafe { NSApp() };
+        let delegate = unsafe {
+            if !msg_send![class!(NSThread), isMainThread] {
+                // This check should be in `new` instead
+                panic!("Events can only be polled from the main thread on macOS");
+            }
+
+            // Mark this thread as the main thread of the Cocoa event system.
+            //
+            // This must be done before any worker threads get a chance to call it
+            // (e.g., via `EventLoopProxy::wakeup()`), causing a wrong thread to be
+            // marked as the main thread.
+            let app = NSApp();
+
+            let delegate = IdRef::new(msg_send![APP_DELEGATE_CLASS.0, new]);
+            let pool = NSAutoreleasePool::new(nil);
+            let _: () = msg_send![app, setDelegate:*delegate];
+            let _: () = msg_send![pool, drain];
+            delegate
+        };
+        setup_control_flow_observers();
         EventLoop {
             elw_target: RootELW::new(Default::default()),
+            delegate, // is this necessary?
             modifiers: Default::default(),
         }
     }
@@ -139,18 +270,8 @@ impl<T> EventLoop<T> {
     pub fn run<F>(mut self, mut callback: F) -> !
         where F: 'static + FnMut(Event<T>, &RootELW<T>, &mut ControlFlow),
     {
-        unsafe {
-            if !msg_send![class!(NSThread), isMainThread] {
-                panic!("Events can only be polled from the main thread on macOS");
-            }
-        }
-
-        let mut control_flow = Default::default();
-        let mut cause = StartCause::Init;
-
+        /*
         loop {
-            callback(Event::NewEvents(cause), self.window_target(), &mut control_flow);
-
             {
                 trace!("Locked pending events in `run`");
                 let mut pending = self.elw_target
@@ -169,38 +290,24 @@ impl<T> EventLoop<T> {
                 }
             }
 
-            let maybe_event = unsafe {
-                let pool = NSAutoreleasePool::new(nil);
-
-                // Wait for the next event. Note that this function blocks during resize.
-                let ns_event = NSApp().nextEventMatchingMask_untilDate_inMode_dequeue_(
-                    NSEventMask::NSAnyEventMask.bits() | NSEventMask::NSEventMaskPressure.bits(),
-                    NSDate::distantFuture(nil),
-                    NSDefaultRunLoopMode,
-                    YES,
-                );
-
-                let maybe_event = self.translate_event(ns_event);
-
-                // Release the pool before calling the top callback in case the user calls either
-                // `run_forever` or `poll_events` within the callback.
-                let _: () = msg_send![pool, release];
-
-                maybe_event
-            };
-
-            if let Some(event) = maybe_event {
-                callback(event.userify(), self.window_target(), &mut control_flow);
-            }
-
-            callback(Event::EventsCleared, self.window_target(), &mut control_flow);
-
             if let ControlFlow::Exit = control_flow {
                 callback(Event::LoopDestroyed, self.window_target(), &mut control_flow);
                 exit(0);
             }
+        }
+        */
 
-            cause = StartCause::Poll;
+        unsafe {
+            let _pool = NSAutoreleasePool::new(nil);
+            let app = NSApp();
+            assert!(!app.is_null());
+            HANDLER.lock().unwrap().callback = Some(Box::new(EventLoopHandler {
+                callback,
+                event_loop: self.elw_target,
+            }));
+            let _: () = msg_send![app, run];
+            // This is probably wrong
+            unreachable_unchecked()
         }
     }
 

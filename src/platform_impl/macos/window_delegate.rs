@@ -150,7 +150,7 @@ unsafe impl Sync for WindowDelegateClass {}
 
 lazy_static! {
     static ref WINDOW_DELEGATE_CLASS: WindowDelegateClass = unsafe {
-        let superclass = class!(NSObject);
+        let superclass = class!(NSResponder);
         let mut decl = ClassDecl::new("WinitWindowDelegate", superclass).unwrap();
 
         decl.add_method(

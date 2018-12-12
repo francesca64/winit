@@ -1,8 +1,10 @@
 #![cfg(target_os = "macos")]
 
+mod app_delegate;
 mod event_loop;
 mod ffi;
 mod monitor;
+mod observer;
 mod util;
 mod view;
 mod window;
