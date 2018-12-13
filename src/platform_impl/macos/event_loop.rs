@@ -6,34 +6,26 @@ use std::{
 
 use cocoa::{
     appkit::{
-        self, NSApp, NSApplication, NSApplicationDefined, NSEvent, NSEventMask,
-        NSEventModifierFlags, NSEventPhase, NSEventSubtype, NSView, NSWindow,
+        self, NSApp, NSApplication, NSApplicationDefined, NSEvent,
+        NSEventModifierFlags, NSEventSubtype,
     },
     base::{BOOL, id, nil, NO, YES},
-    foundation::{NSAutoreleasePool, NSDate, NSDefaultRunLoopMode, NSPoint, NSRect, NSSize},
+    foundation::{NSAutoreleasePool, NSPoint},
 };
 
 use {
     event::{
         self, DeviceEvent, ElementState, Event, KeyboardInput,
-        ModifiersState, StartCause, TouchPhase, WindowEvent,
+        ModifiersState, StartCause, WindowEvent,
     },
     event_loop::{ControlFlow, EventLoopClosed, EventLoopWindowTarget as RootELW},
-    window,
 };
 use platform_impl::platform::{
-    app_delegate::APP_DELEGATE_CLASS, DEVICE_ID, monitor::{self, MonitorHandle},
+    app::APP_CLASS, app_delegate::APP_DELEGATE_CLASS, DEVICE_ID,
+    monitor::{self, MonitorHandle},
     observer::{EventLoopWaker, setup_control_flow_observers},
-    util::IdRef, window::UnownedWindow,
+    util::{Access, IdRef}, window::UnownedWindow,
 };
-
-#[derive(Default)]
-struct Modifiers {
-    shift_pressed: bool,
-    ctrl_pressed: bool,
-    win_pressed: bool,
-    alt_pressed: bool,
-}
 
 // Change to `!` once stable
 pub enum Never {}
@@ -100,6 +92,7 @@ pub struct Handler {
     control_flow_prev: ControlFlow,
     callback: Option<Box<dyn EventHandler>>,
     waker: EventLoopWaker,
+    pending_events: Weak<Mutex<PendingEvents>>,
 }
 
 unsafe impl Send for Handler {}
@@ -134,7 +127,7 @@ impl Handler {
                     }
                 }
             },*/
-            ControlFlow::Exit => panic!("unexpected `ControlFlow::Exit`"),
+            ControlFlow::Exit => StartCause::Poll,//panic!("unexpected `ControlFlow::Exit`"),
             _ => unimplemented!(),
         };
         if let Some(ref mut callback) = self.callback {
@@ -145,6 +138,14 @@ impl Handler {
     pub fn cleared(&mut self) {
         if let Some(ref mut callback) = self.callback {
             callback.handle_nonuser_event(Event::EventsCleared, &mut self.control_flow);
+            //trace!("Locked pending events in `run`");
+            let mut pending = self.pending_events
+                .access(|pending| pending.take())
+                .unwrap();
+            //trace!("Unlocked pending events in `run`");
+            for event in pending.drain(0..) {
+                callback.handle_nonuser_event(event, &mut self.control_flow);
+            }
         }
         let old = self.control_flow_prev;
         let new = self.control_flow;
@@ -155,7 +156,9 @@ impl Handler {
             (_, ControlFlow::Wait) => self.waker.stop(),
             (_, ControlFlow::WaitUntil(new_instant)) => self.waker.start_at(new_instant),
             (_, ControlFlow::Poll) => self.waker.start(),
-            (_, ControlFlow::Exit) => (),
+            (_, ControlFlow::Exit) => {
+                let _: () = unsafe { msg_send![NSApp(), stop:nil] };
+            },
         }
     }
 }
@@ -220,8 +223,7 @@ impl<T> Default for EventLoopWindowTarget<T> {
 
 pub struct EventLoop<T: 'static> {
     elw_target: RootELW<T>,
-    delegate: IdRef,
-    modifiers: Modifiers,
+    _delegate: IdRef,
 }
 
 impl<T> EventLoop<T> {
@@ -229,7 +231,7 @@ impl<T> EventLoop<T> {
         let delegate = unsafe {
             if !msg_send![class!(NSThread), isMainThread] {
                 // This check should be in `new` instead
-                panic!("Events can only be polled from the main thread on macOS");
+                panic!("On macOS, `EventLoop` must be created on the main thread!");
             }
 
             // Mark this thread as the main thread of the Cocoa event system.
@@ -237,7 +239,7 @@ impl<T> EventLoop<T> {
             // This must be done before any worker threads get a chance to call it
             // (e.g., via `EventLoopProxy::wakeup()`), causing a wrong thread to be
             // marked as the main thread.
-            let app = NSApp();
+            let app: id = msg_send![APP_CLASS.0, sharedApplication];
 
             let delegate = IdRef::new(msg_send![APP_DELEGATE_CLASS.0, new]);
             let pool = NSAutoreleasePool::new(nil);
@@ -248,8 +250,7 @@ impl<T> EventLoop<T> {
         setup_control_flow_observers();
         EventLoop {
             elw_target: RootELW::new(Default::default()),
-            delegate, // is this necessary?
-            modifiers: Default::default(),
+            _delegate: delegate, // is this necessary?
         }
     }
 
@@ -267,47 +268,33 @@ impl<T> EventLoop<T> {
         &self.elw_target
     }
 
-    pub fn run<F>(mut self, mut callback: F) -> !
+    pub fn run<F>(self, callback: F) -> !
         where F: 'static + FnMut(Event<T>, &RootELW<T>, &mut ControlFlow),
     {
-        /*
-        loop {
-            {
-                trace!("Locked pending events in `run`");
-                let mut pending = self.elw_target
-                    .inner
-                    .pending_events
-                    .lock()
-                    .unwrap()
-                    .take();
-                trace!("Unlocked pending events in `run`");
-                for event in pending.drain(0..) {
-                    callback(
-                        event.userify(),
-                        self.window_target(),
-                        &mut control_flow,
-                    );
-                }
-            }
-
-            if let ControlFlow::Exit = control_flow {
-                callback(Event::LoopDestroyed, self.window_target(), &mut control_flow);
-                exit(0);
-            }
-        }
-        */
-
         unsafe {
             let _pool = NSAutoreleasePool::new(nil);
             let app = NSApp();
-            assert!(!app.is_null());
-            HANDLER.lock().unwrap().callback = Some(Box::new(EventLoopHandler {
-                callback,
-                event_loop: self.elw_target,
-            }));
+            assert_ne!(app, nil);
+            {
+                let pending_events = Arc::downgrade(&self.elw_target.inner.pending_events);
+                let mut handler = HANDLER.lock().unwrap();
+                handler.callback = Some(Box::new(EventLoopHandler {
+                    callback,
+                    event_loop: self.elw_target,
+                }));
+                handler.pending_events = pending_events;
+            }
             let _: () = msg_send![app, run];
-            // This is probably wrong
-            unreachable_unchecked()
+            {
+                let mut handler = HANDLER.lock().unwrap();
+                if let Some(mut callback) = handler.callback.take() {
+                    callback.handle_nonuser_event(
+                        Event::LoopDestroyed,
+                        &mut handler.control_flow,
+                    );
+                }
+            }
+            exit(0)
         }
     }
 
@@ -319,27 +306,9 @@ impl<T> EventLoop<T> {
 
     // Converts an `NSEvent` to a winit `Event`.
     unsafe fn translate_event(&mut self, ns_event: id) -> Option<Event<Never>> {
-        if ns_event == nil {
-            return None;
-        }
-
-        // FIXME: Despite not being documented anywhere, an `NSEvent` is produced when a user opens
-        // Spotlight while the NSApplication is in focus. This `NSEvent` produces a `NSEventType`
-        // with value `21`. This causes a SEGFAULT as soon as we try to match on the `NSEventType`
-        // enum as there is no variant associated with the value. Thus, we return early if this
-        // sneaky event occurs. If someone does find some documentation on this, please fix this by
-        // adding an appropriate variant to the `NSEventType` enum in the cocoa-rs crate.
-        if ns_event.eventType() as u64 == 21 {
-            return None;
-        }
-
         let event_type = ns_event.eventType();
         let ns_window = ns_event.window();
         let window_id = super::window::get_window_id(ns_window);
-
-        // FIXME: Document this. Why do we do this? Seems like it passes on events to window/app.
-        // If we don't do this, window does not become main for some reason.
-        NSApp().sendEvent_(ns_event);
 
         let windows = self.elw_target.inner.window_list.lock().unwrap();
         let maybe_window = (*windows)
@@ -347,11 +316,6 @@ impl<T> EventLoop<T> {
             .iter()
             .filter_map(Weak::upgrade)
             .find(|window| window_id == window.id());
-
-        let into_event = |window_event| Event::WindowEvent {
-            window_id: window::WindowId(window_id),
-            event: window_event,
-        };
 
         // Returns `Some` window if one of our windows is the key window.
         let maybe_key_window = || (*windows)
@@ -364,111 +328,6 @@ impl<T> EventLoop<T> {
             });
 
         match event_type {
-            // https://github.com/glfw/glfw/blob/50eccd298a2bbc272b4977bd162d3e4b55f15394/src/cocoa_window.m#L881
-            appkit::NSKeyUp  => {
-                if let Some(key_window) = maybe_key_window() {
-                    if event_mods(ns_event).logo {
-                        let _: () = msg_send![*key_window.nswindow, sendEvent:ns_event];
-                    }
-                }
-                None
-            },
-            // similar to above, but for `<Cmd-.>`, the keyDown is suppressed instead of the
-            // KeyUp, and the above trick does not appear to work.
-            appkit::NSKeyDown => {
-                let modifiers = event_mods(ns_event);
-                let keycode = NSEvent::keyCode(ns_event);
-                if modifiers.logo && keycode == 47 {
-                    modifier_event(ns_event, NSEventModifierFlags::NSCommandKeyMask, false)
-                        .map(into_event)
-                } else {
-                    None
-                }
-            },
-            appkit::NSFlagsChanged => {
-                let mut events = VecDeque::new();
-
-                if let Some(window_event) = modifier_event(
-                    ns_event,
-                    NSEventModifierFlags::NSShiftKeyMask,
-                    self.modifiers.shift_pressed,
-                ) {
-                    self.modifiers.shift_pressed = !self.modifiers.shift_pressed;
-                    events.push_back(into_event(window_event));
-                }
-
-                if let Some(window_event) = modifier_event(
-                    ns_event,
-                    NSEventModifierFlags::NSControlKeyMask,
-                    self.modifiers.ctrl_pressed,
-                ) {
-                    self.modifiers.ctrl_pressed = !self.modifiers.ctrl_pressed;
-                    events.push_back(into_event(window_event));
-                }
-
-                if let Some(window_event) = modifier_event(
-                    ns_event,
-                    NSEventModifierFlags::NSCommandKeyMask,
-                    self.modifiers.win_pressed,
-                ) {
-                    self.modifiers.win_pressed = !self.modifiers.win_pressed;
-                    events.push_back(into_event(window_event));
-                }
-
-                if let Some(window_event) = modifier_event(
-                    ns_event,
-                    NSEventModifierFlags::NSAlternateKeyMask,
-                    self.modifiers.alt_pressed,
-                ) {
-                    self.modifiers.alt_pressed = !self.modifiers.alt_pressed;
-                    events.push_back(into_event(window_event));
-                }
-
-                let event = events.pop_front();
-                trace!("Locked pending events in `translate_event`");
-                self.elw_target.inner.pending_events
-                    .lock()
-                    .unwrap()
-                    .queue_events(events);
-                trace!("Unlocked pending events in `translate_event`");
-                event
-            },
-
-            appkit::NSMouseEntered => {
-                let window = match maybe_window.or_else(maybe_key_window) {
-                    Some(window) => window,
-                    None => return None,
-                };
-
-                let window_point = ns_event.locationInWindow();
-                let view_point = if ns_window == nil {
-                    let ns_size = NSSize::new(0.0, 0.0);
-                    let ns_rect = NSRect::new(window_point, ns_size);
-                    let window_rect = window.nswindow.convertRectFromScreen_(ns_rect);
-                    window.nsview.convertPoint_fromView_(window_rect.origin, nil)
-                } else {
-                    window.nsview.convertPoint_fromView_(window_point, nil)
-                };
-
-                let view_rect = NSView::frame(*window.nsview);
-                let x = view_point.x as f64;
-                let y = (view_rect.size.height - view_point.y) as f64;
-                let window_event = WindowEvent::CursorMoved {
-                    device_id: DEVICE_ID,
-                    position: (x, y).into(),
-                    modifiers: event_mods(ns_event),
-                };
-                let event = Event::WindowEvent { window_id: window::WindowId(window.id()), event: window_event };
-                trace!("Locked pending events in `translate_event`");
-                self.elw_target.inner.pending_events
-                    .lock()
-                    .unwrap()
-                    .queue_event(event);
-                trace!("Unlocked pending events in `translate_event`");
-                Some(into_event(WindowEvent::CursorEntered { device_id: DEVICE_ID }))
-            },
-            appkit::NSMouseExited => { Some(into_event(WindowEvent::CursorLeft { device_id: DEVICE_ID })) },
-
             appkit::NSMouseMoved |
             appkit::NSLeftMouseDragged |
             appkit::NSOtherMouseDragged |
@@ -511,75 +370,6 @@ impl<T> EventLoop<T> {
                     .queue_events(events);
                 trace!("Unlocked pending events in `translate_event`");
                 event
-            },
-
-            appkit::NSScrollWheel => {
-                // If none of the windows received the scroll, return `None`.
-                if maybe_window.is_none() {
-                    return None;
-                }
-
-                use event::MouseScrollDelta::{LineDelta, PixelDelta};
-                let delta = if ns_event.hasPreciseScrollingDeltas() == YES {
-                    PixelDelta((
-                        ns_event.scrollingDeltaX() as f64,
-                        ns_event.scrollingDeltaY() as f64,
-                    ).into())
-                } else {
-                    // TODO: This is probably wrong
-                    LineDelta(
-                        ns_event.scrollingDeltaX() as f32,
-                        ns_event.scrollingDeltaY() as f32,
-                    )
-                };
-                let phase = match ns_event.phase() {
-                    NSEventPhase::NSEventPhaseMayBegin | NSEventPhase::NSEventPhaseBegan => TouchPhase::Started,
-                    NSEventPhase::NSEventPhaseEnded => TouchPhase::Ended,
-                    _ => TouchPhase::Moved,
-                };
-                trace!("Locked pending events in `translate_event`");
-                self.elw_target.inner.pending_events.lock().unwrap().queue_event(Event::DeviceEvent {
-                    device_id: DEVICE_ID,
-                    event: DeviceEvent::MouseWheel {
-                        delta: if ns_event.hasPreciseScrollingDeltas() == YES {
-                            PixelDelta((
-                                ns_event.scrollingDeltaX() as f64,
-                                ns_event.scrollingDeltaY() as f64,
-                            ).into())
-                        } else {
-                            LineDelta(
-                                ns_event.scrollingDeltaX() as f32,
-                                ns_event.scrollingDeltaY() as f32,
-                            )
-                        },
-                    }
-                });
-                trace!("Unlocked pending events in `translate_event`");
-                let window_event = WindowEvent::MouseWheel {
-                    device_id: DEVICE_ID,
-                    delta,
-                    phase,
-                    modifiers: event_mods(ns_event),
-                };
-                Some(into_event(window_event))
-            },
-
-            appkit::NSEventTypePressure => {
-                let pressure = ns_event.pressure();
-                let stage = ns_event.stage();
-                let window_event = WindowEvent::TouchpadPressure {
-                    device_id: DEVICE_ID,
-                    pressure,
-                    stage,
-                };
-                Some(into_event(window_event))
-            },
-
-            NSApplicationDefined => match ns_event.subtype() {
-                NSEventSubtype::NSApplicationActivatedEventType => {
-                    unimplemented!();
-                },
-                _ => None,
             },
 
             _  => None,
@@ -685,8 +475,8 @@ pub fn to_virtual_key_code(code: c_ushort) -> Option<event::VirtualKeyCode> {
         0x33 => event::VirtualKeyCode::Back,
         //0x34 => unkown,
         0x35 => event::VirtualKeyCode::Escape,
-        0x36 => event::VirtualKeyCode::LWin,
-        0x37 => event::VirtualKeyCode::RWin,
+        0x36 => event::VirtualKeyCode::RWin,
+        0x37 => event::VirtualKeyCode::LWin,
         0x38 => event::VirtualKeyCode::LShift,
         //0x39 => Caps lock,
         0x3a => event::VirtualKeyCode::LAlt,
@@ -794,7 +584,7 @@ pub fn event_mods(event: id) -> ModifiersState {
     }
 }
 
-unsafe fn modifier_event(
+pub unsafe fn modifier_event(
     ns_event: id,
     keymask: NSEventModifierFlags,
     was_key_pressed: bool,

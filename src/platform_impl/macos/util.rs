@@ -1,12 +1,12 @@
-use std::{ops::Deref, sync::{Arc, Mutex, Weak}};
+use std::{ops::{BitAnd, Deref}, sync::{Arc, Mutex, Weak}};
 
 use cocoa::{
-    appkit::NSWindowStyleMask,
+    appkit::{NSApp, NSWindowStyleMask},
     base::{id, nil},
     foundation::{NSAutoreleasePool, NSRect, NSUInteger},
 };
 use core_graphics::display::CGDisplay;
-use objc::runtime::{BOOL, Object, Sel, YES};
+use objc::runtime::{BOOL, Class, Object, Sel, YES};
 
 use platform_impl::platform::ffi;
 
@@ -89,12 +89,25 @@ pub fn bottom_left_to_top_left(rect: NSRect) -> f64 {
     CGDisplay::main().pixels_high() as f64 - (rect.origin.y + rect.size.height)
 }
 
+pub fn has_flag<T>(bitset: T, flag: T) -> bool
+where T:
+    Copy + PartialEq + BitAnd<T, Output = T>
+{
+    bitset & flag == flag
+}
+
 pub unsafe fn set_style_mask(nswindow: id, nsview: id, mask: NSWindowStyleMask) {
     trace!("`set_style_mask` {:?} {:?} {:?}", nswindow, nsview, mask);
     use cocoa::appkit::NSWindow;
     nswindow.setStyleMask_(mask);
-    // If we don't do this, key handling will break. Therefore, never call `setStyleMask` directly!
+    // If we don't do this, key handling will break (at least until the window
+    // is clicked again/etc.); therefore, never call `setStyleMask` directly!
     nswindow.makeFirstResponder_(nsview);
+}
+
+pub unsafe fn superclass<'a>(this: &'a Object) -> &'a Class {
+    let superclass: id = msg_send![this, superclass];
+    &*(superclass as *const _)
 }
 
 pub unsafe fn create_input_context(view: id) -> IdRef {
@@ -105,8 +118,7 @@ pub unsafe fn create_input_context(view: id) -> IdRef {
 
 #[allow(dead_code)]
 pub unsafe fn open_emoji_picker() {
-    let app: id = msg_send![class!(NSApplication), sharedApplication];
-    let _: () = msg_send![app, orderFrontCharacterPalette:nil];
+    let _: () = msg_send![NSApp(), orderFrontCharacterPalette:nil];
 }
 
 pub extern fn yes(_: &Object, _: Sel) -> BOOL {

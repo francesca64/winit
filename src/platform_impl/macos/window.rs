@@ -6,8 +6,8 @@ use std::{
 use cocoa::{
     appkit::{
         self, CGFloat, NSApp, NSApplication, NSApplicationActivationPolicy,
-        NSColor, NSRequestUserAttentionType, NSScreen, NSView,
-        NSWindow, NSWindowButton, NSWindowStyleMask,
+        NSColor, NSRequestUserAttentionType, NSScreen, NSView, NSWindow,
+        NSWindowButton, NSWindowStyleMask,
     },
     base::{id, nil},
     foundation::{NSAutoreleasePool, NSDictionary, NSPoint, NSRect, NSSize, NSString},
@@ -305,6 +305,7 @@ impl UnownedWindow {
         let fullscreen = win_attribs.fullscreen.take();
         let maximized = win_attribs.maximized;
         let visible = win_attribs.visible;
+        let decorations = win_attribs.decorations;
 
         let window = Arc::new(UnownedWindow {
             nsview,
@@ -312,7 +313,7 @@ impl UnownedWindow {
             input_context,
             window_list: Arc::downgrade(&elw_target.window_list),
             shared_state: Mutex::new(win_attribs.into()),
-            decorations: Default::default(),
+            decorations: AtomicBool::new(decorations),
             cursor_hidden: Default::default(),
         });
 
@@ -683,6 +684,7 @@ impl UnownedWindow {
 
     #[inline]
     pub fn set_decorations(&self, decorations: bool) {
+        trace!("`set_decorations` {:?}", decorations);
         if decorations != self.decorations.load(Ordering::Acquire) {
             self.decorations.store(decorations, Ordering::Release);
 

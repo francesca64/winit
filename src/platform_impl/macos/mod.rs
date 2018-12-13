@@ -1,5 +1,6 @@
 #![cfg(target_os = "macos")]
 
+mod app;
 mod app_delegate;
 mod event_loop;
 mod ffi;

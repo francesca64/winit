@@ -7,23 +7,34 @@ use std::{
 };
 
 use cocoa::{
-    base::{id, nil}, appkit::{NSEvent, NSView, NSWindow},
-    foundation::{NSPoint, NSRect, NSSize, NSString, NSUInteger},
+    appkit::{NSApp, NSEvent, NSEventModifierFlags, NSEventPhase, NSView, NSWindow},
+    base::{id, nil}, foundation::{NSPoint, NSRect, NSSize, NSString, NSUInteger},
 };
-use objc::{declare::ClassDecl, runtime::{Class, Object, Protocol, Sel, BOOL, YES}};
+use objc::{declare::ClassDecl, runtime::{BOOL, Class, NO, Object, Protocol, Sel, YES}};
 
 use {
-    event::{ElementState, Event, KeyboardInput, MouseButton, WindowEvent},
+    event::{
+        DeviceEvent, ElementState, Event, KeyboardInput, MouseButton,
+        MouseScrollDelta, TouchPhase, VirtualKeyCode, WindowEvent,
+    },
     window::WindowId,
 };
 use platform_impl::platform::{
     DEVICE_ID,
     event_loop::{
-        check_additional_virtual_key_codes, event_mods,
+        check_additional_virtual_key_codes, event_mods, modifier_event,
         PendingEvents, to_virtual_key_code,
     },
     util::{self, Access, IdRef}, ffi::*, window::get_window_id,
 };
+
+#[derive(Default)]
+struct Modifiers {
+    shift_pressed: bool,
+    ctrl_pressed: bool,
+    win_pressed: bool,
+    alt_pressed: bool,
+}
 
 struct ViewState {
     nswindow: id,
@@ -31,6 +42,7 @@ struct ViewState {
     ime_spot: Option<(f64, f64)>,
     raw_characters: Option<String>,
     is_key_down: bool,
+    modifiers: Modifiers,
 }
 
 pub fn new_view(nswindow: id, pending_events: Weak<Mutex<PendingEvents>>) -> IdRef {
@@ -40,6 +52,7 @@ pub fn new_view(nswindow: id, pending_events: Weak<Mutex<PendingEvents>>) -> IdR
         ime_spot: None,
         raw_characters: None,
         is_key_down: false,
+        modifiers: Default::default(),
     };
     unsafe {
         // This is free'd in `dealloc`
@@ -79,6 +92,14 @@ lazy_static! {
         decl.add_method(
             sel!(initWithWinit:),
             init_with_winit as extern fn(&Object, Sel, *mut c_void) -> id,
+        );
+        decl.add_method(
+            sel!(viewDidMoveToWindow),
+            view_did_move_to_window as extern fn(&Object, Sel),
+        );
+        decl.add_method(
+            sel!(acceptsFirstResponder),
+            accepts_first_responder as extern fn(&Object, Sel) -> BOOL,
         );
         decl.add_method(
             sel!(hasMarkedText),
@@ -133,6 +154,10 @@ lazy_static! {
             key_up as extern fn(&Object, Sel, id),
         );
         decl.add_method(
+            sel!(flagsChanged:),
+            flags_changed as extern fn(&Object, Sel, id),
+        );
+        decl.add_method(
             sel!(insertTab:),
             insert_tab as extern fn(&Object, Sel, id),
         );
@@ -181,8 +206,28 @@ lazy_static! {
             other_mouse_dragged as extern fn(&Object, Sel, id),
         );
         decl.add_method(
+            sel!(mouseEntered:),
+            mouse_entered as extern fn(&Object, Sel, id),
+        );
+        decl.add_method(
+            sel!(mouseExited:),
+            mouse_exited as extern fn(&Object, Sel, id),
+        );
+        decl.add_method(
+            sel!(scrollWheel:),
+            scroll_wheel as extern fn(&Object, Sel, id),
+        );
+        decl.add_method(
+            sel!(pressureChangeWithEvent:),
+            pressure_change_with_event as extern fn(&Object, Sel, id),
+        );
+        decl.add_method(
             sel!(_wantsKeyDownForEvent:),
             wants_key_down_for_event as extern fn(&Object, Sel, id) -> BOOL,
+        );
+        decl.add_method(
+            sel!(cancelOperation:),
+            cancel_operation as extern fn(&Object, Sel, id),
         );
         decl.add_ivar::<*mut c_void>("winitState");
         decl.add_ivar::<id>("markedText");
@@ -213,6 +258,24 @@ extern fn init_with_winit(this: &Object, _sel: Sel, state: *mut c_void) -> id {
         }
         this
     }
+}
+
+extern fn view_did_move_to_window(this: &Object, _sel: Sel) {
+    trace!("Triggered `viewDidMoveToWindow`");
+    unsafe {
+        let state: *mut c_void = *this.get_ivar("winitState");
+        let rect: NSRect = msg_send![this, visibleRect];
+        let _: () = msg_send![this,
+            addTrackingRect:rect
+            owner:this
+            userData:nil
+            assumeInside:NO
+        ];
+    }
+}
+
+extern fn accepts_first_responder(_this: &Object, _sel: Sel) -> BOOL {
+    YES
 }
 
 extern fn has_marked_text(this: &Object, _sel: Sel) -> BOOL {
@@ -344,7 +407,7 @@ extern fn insert_text(this: &Object, _sel: Sel, string: id, _replacement_range: 
         state.is_key_down = true;
 
         // We don't need this now, but it's here if that changes.
-        //let event: id = msg_send![class!(NSApp), currentEvent];
+        //let event: id = msg_send![NSApp(), currentEvent];
 
         let mut events = VecDeque::with_capacity(characters.len());
         for character in string.chars() {
@@ -509,6 +572,59 @@ extern fn key_up(this: &Object, _sel: Sel, event: id) {
     }
 }
 
+extern fn flags_changed(this: &Object, _sel: Sel, event: id) {
+    trace!("Triggered `flagsChanged`");
+    unsafe {
+        let state_ptr: *mut c_void = *this.get_ivar("winitState");
+        let state = &mut *(state_ptr as *mut ViewState);
+
+        let mut events = VecDeque::with_capacity(4);
+
+        if let Some(window_event) = modifier_event(
+            event,
+            NSEventModifierFlags::NSShiftKeyMask,
+            state.modifiers.shift_pressed,
+        ) {
+            state.modifiers.shift_pressed = !state.modifiers.shift_pressed;
+            events.push_back(window_event);
+        }
+
+        if let Some(window_event) = modifier_event(
+            event,
+            NSEventModifierFlags::NSControlKeyMask,
+            state.modifiers.ctrl_pressed,
+        ) {
+            state.modifiers.ctrl_pressed = !state.modifiers.ctrl_pressed;
+            events.push_back(window_event);
+        }
+
+        if let Some(window_event) = modifier_event(
+            event,
+            NSEventModifierFlags::NSCommandKeyMask,
+            state.modifiers.win_pressed,
+        ) {
+            state.modifiers.win_pressed = !state.modifiers.win_pressed;
+            events.push_back(window_event);
+        }
+
+        if let Some(window_event) = modifier_event(
+            event,
+            NSEventModifierFlags::NSAlternateKeyMask,
+            state.modifiers.alt_pressed,
+        ) {
+            state.modifiers.alt_pressed = !state.modifiers.alt_pressed;
+            events.push_back(window_event);
+        }
+
+        state.pending_events.access(|pending| for event in events {
+            pending.queue_event(Event::WindowEvent {
+                window_id: WindowId(get_window_id(state.nswindow)),
+                event,
+            });
+        });
+    }
+}
+
 extern fn insert_tab(this: &Object, _sel: Sel, _sender: id) {
     unsafe {
         let window: id = msg_send![this, window];
@@ -528,6 +644,39 @@ extern fn insert_back_tab(this: &Object, _sel: Sel, _sender: id) {
         if first_responder == this_ptr {
             let (): _ = msg_send![window, selectPreviousKeyView:this];
         }
+    }
+}
+
+// Allows us to receive Cmd-. (the shortcut for closing a dialog)
+// https://bugs.eclipse.org/bugs/show_bug.cgi?id=300620#c6
+extern fn cancel_operation(this: &Object, _sel: Sel, _sender: id) {
+    trace!("Triggered `cancelOperation`");
+    unsafe {
+        let state_ptr: *mut c_void = *this.get_ivar("winitState");
+        let state = &mut *(state_ptr as *mut ViewState);
+
+        let scancode = 0x2f;
+        let virtual_keycode = to_virtual_key_code(scancode);
+        debug_assert_eq!(virtual_keycode, Some(VirtualKeyCode::Period));
+
+        let event: id = msg_send![NSApp(), currentEvent];
+
+        let window_event = Event::WindowEvent {
+            window_id: WindowId(get_window_id(state.nswindow)),
+            event: WindowEvent::KeyboardInput {
+                device_id: DEVICE_ID,
+                input: KeyboardInput {
+                    state: ElementState::Pressed,
+                    scancode: scancode as _,
+                    virtual_keycode,
+                    modifiers: event_mods(event),
+                },
+            },
+        };
+
+        state.pending_events.access(|pending| {
+            pending.queue_event(window_event);
+        });
     }
 }
 
@@ -626,7 +775,129 @@ extern fn other_mouse_dragged(this: &Object, _sel: Sel, event: id) {
     mouse_motion(this, event);
 }
 
+extern fn mouse_entered(this: &Object, _sel: Sel, event: id) {
+    trace!("Triggered `mouseEntered`");
+    unsafe {
+        let state_ptr: *mut c_void = *this.get_ivar("winitState");
+        let state = &mut *(state_ptr as *mut ViewState);
+
+        let enter_event = Event::WindowEvent {
+            window_id: WindowId(get_window_id(state.nswindow)),
+            event: WindowEvent::CursorEntered { device_id: DEVICE_ID },
+        };
+
+        let move_event = {
+            let window_point = event.locationInWindow();
+            let view_point: NSPoint = msg_send![this,
+                convertPoint:window_point
+                fromView:nil // convert from window coordinates
+            ];
+            let view_rect: NSRect = msg_send![this, frame];
+            let x = view_point.x as f64;
+            let y = (view_rect.size.height - view_point.y) as f64;
+            Event::WindowEvent {
+                window_id: WindowId(get_window_id(state.nswindow)),
+                event: WindowEvent::CursorMoved {
+                    device_id: DEVICE_ID,
+                    position: (x, y).into(),
+                    modifiers: event_mods(event),
+                }
+            }
+        };
+
+        state.pending_events.access(|pending| {
+            pending.queue_event(enter_event);
+            pending.queue_event(move_event);
+        });
+    }
+}
+
+extern fn mouse_exited(this: &Object, _sel: Sel, _event: id) {
+    trace!("Triggered `mouseExited`");
+    unsafe {
+        let state_ptr: *mut c_void = *this.get_ivar("winitState");
+        let state = &mut *(state_ptr as *mut ViewState);
+
+        let window_event = Event::WindowEvent {
+            window_id: WindowId(get_window_id(state.nswindow)),
+            event: WindowEvent::CursorLeft { device_id: DEVICE_ID },
+        };
+
+        state.pending_events.access(|pending| {
+            pending.queue_event(window_event);
+        });
+    }
+}
+
+extern fn scroll_wheel(this: &Object, _sel: Sel, event: id) {
+    trace!("Triggered `scrollWheel`");
+    unsafe {
+        let delta = {
+            let (x, y) = (event.scrollingDeltaX(), event.scrollingDeltaY());
+            if event.hasPreciseScrollingDeltas() == YES {
+                MouseScrollDelta::PixelDelta((x as f64, y as f64).into())
+            } else {
+                MouseScrollDelta::LineDelta(x as f32, y as f32)
+            }
+        };
+        let phase = match event.phase() {
+            NSEventPhase::NSEventPhaseMayBegin | NSEventPhase::NSEventPhaseBegan => TouchPhase::Started,
+            NSEventPhase::NSEventPhaseEnded => TouchPhase::Ended,
+            _ => TouchPhase::Moved,
+        };
+
+        let device_event = Event::DeviceEvent {
+            device_id: DEVICE_ID,
+            event: DeviceEvent::MouseWheel { delta },
+        };
+
+        let state_ptr: *mut c_void = *this.get_ivar("winitState");
+        let state = &mut *(state_ptr as *mut ViewState);
+
+        let window_event = Event::WindowEvent {
+            window_id: WindowId(get_window_id(state.nswindow)),
+            event: WindowEvent::MouseWheel {
+                device_id: DEVICE_ID,
+                delta,
+                phase,
+                modifiers: event_mods(event),
+            },
+        };
+
+        state.pending_events.access(|pending| {
+            pending.queue_event(device_event);
+            pending.queue_event(window_event);
+        });
+    }
+}
+
+extern fn pressure_change_with_event(this: &Object, _sel: Sel, event: id) {
+    trace!("Triggered `pressureChangeWithEvent`");
+    unsafe {
+        let state_ptr: *mut c_void = *this.get_ivar("winitState");
+        let state = &mut *(state_ptr as *mut ViewState);
+
+        let pressure = event.pressure();
+        let stage = event.stage();
+
+        let window_event = Event::WindowEvent {
+            window_id: WindowId(get_window_id(state.nswindow)),
+            event: WindowEvent::TouchpadPressure {
+                device_id: DEVICE_ID,
+                pressure,
+                stage,
+            },
+        };
+
+        state.pending_events.access(|pending| {
+            pending.queue_event(window_event);
+        });
+    }
+}
+
+// Allows us to receive Ctrl-Tab and Ctrl-Esc.
+// Note that this *doesn't* help with any missing Cmd inputs.
 // https://github.com/chromium/chromium/blob/a86a8a6bcfa438fa3ac2eba6f02b3ad1f8e0756f/ui/views/cocoa/bridged_content_view.mm#L816
-extern fn wants_key_down_for_event(_this: &Object, _se: Sel, _event: id) -> BOOL {
+extern fn wants_key_down_for_event(_this: &Object, _sel: Sel, _event: id) -> BOOL {
     YES
 }
