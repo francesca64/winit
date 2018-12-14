@@ -1,10 +1,7 @@
 // This is a pretty close port of the implementation in GLFW:
 // https://github.com/glfw/glfw/blob/7ef34eb06de54dd9186d3d21a401b2ef819b59e7/src/cocoa_window.m
 
-use std::{
-    boxed::Box, collections::VecDeque, os::raw::*,
-    slice, str, sync::{Mutex, Weak},
-};
+use std::{boxed::Box, collections::VecDeque, os::raw::*, slice, str};
 
 use cocoa::{
     appkit::{NSApp, NSEvent, NSEventModifierFlags, NSEventPhase, NSView, NSWindow},
@@ -20,12 +17,9 @@ use {
     window::WindowId,
 };
 use platform_impl::platform::{
-    DEVICE_ID,
-    event_loop::{
-        check_additional_virtual_key_codes, event_mods, modifier_event,
-        PendingEvents, to_virtual_key_code,
-    },
-    util::{self, Access, IdRef}, ffi::*, window::get_window_id,
+    app_state::AppState, DEVICE_ID,
+    event::{check_function_keys, event_mods, modifier_event, to_virtual_keycode},
+    util::{self, IdRef}, ffi::*, window::get_window_id,
 };
 
 #[derive(Default)]
@@ -38,17 +32,15 @@ struct Modifiers {
 
 struct ViewState {
     nswindow: id,
-    pending_events: Weak<Mutex<PendingEvents>>,
     ime_spot: Option<(f64, f64)>,
     raw_characters: Option<String>,
     is_key_down: bool,
     modifiers: Modifiers,
 }
 
-pub fn new_view(nswindow: id, pending_events: Weak<Mutex<PendingEvents>>) -> IdRef {
+pub fn new_view(nswindow: id) -> IdRef {
     let state = ViewState {
         nswindow,
-        pending_events,
         ime_spot: None,
         raw_characters: None,
         is_key_down: false,
@@ -263,7 +255,6 @@ extern fn init_with_winit(this: &Object, _sel: Sel, state: *mut c_void) -> id {
 extern fn view_did_move_to_window(this: &Object, _sel: Sel) {
     trace!("Triggered `viewDidMoveToWindow`");
     unsafe {
-        let state: *mut c_void = *this.get_ivar("winitState");
         let rect: NSRect = msg_send![this, visibleRect];
         let _: () = msg_send![this,
             addTrackingRect:rect
@@ -417,7 +408,7 @@ extern fn insert_text(this: &Object, _sel: Sel, string: id, _replacement_range: 
             });
         }
 
-        state.pending_events.access(|pending| pending.queue_events(events));
+        AppState::queue_events(events);
     }
 }
 
@@ -450,7 +441,7 @@ extern fn do_command_by_selector(this: &Object, _sel: Sel, command: Sel) {
             }
         };
 
-        state.pending_events.access(|pending| pending.queue_events(events));
+        AppState::queue_events(events);
     }
 }
 
@@ -479,10 +470,9 @@ extern fn key_down(this: &Object, _sel: Sel, event: id) {
         // We are checking here for F21-F24 keys, since their keycode
         // can vary, but we know that they are encoded
         // in characters property.
-        let virtual_keycode = to_virtual_key_code(keycode)
-            .or_else(|| {
-                check_additional_virtual_key_codes(&state.raw_characters)
-            });
+        let virtual_keycode = to_virtual_keycode(keycode).or_else(|| {
+            check_function_keys(&state.raw_characters)
+        });
         let scancode = keycode as u32;
         let is_repeat = msg_send![event, isARepeat];
 
@@ -510,24 +500,23 @@ extern fn key_down(this: &Object, _sel: Sel, event: id) {
             Some(string.to_owned())
         };
 
-        let pass_along = state.pending_events.access(|pending| {
-            pending.queue_event(window_event);
+        let pass_along = {
+            AppState::queue_event(window_event);
             // Emit `ReceivedCharacter` for key repeats
-            if is_repeat && state.is_key_down{
+            if is_repeat && state.is_key_down {
                 for character in string.chars() {
-                    let window_event = Event::WindowEvent {
+                    AppState::queue_event(Event::WindowEvent {
                         window_id,
                         event: WindowEvent::ReceivedCharacter(character),
-                    };
-                    pending.queue_event(window_event);
+                    });
                 }
                 false
             } else {
                 true
             }
-        });
+        };
 
-        if let Some(true) = pass_along {
+        if pass_along {
             // Some keys (and only *some*, with no known reason) don't trigger `insertText`, while others do...
             // So, we don't give repeats the opportunity to trigger that, since otherwise our hack will cause some
             // keys to generate twice as many characters.
@@ -550,9 +539,9 @@ extern fn key_up(this: &Object, _sel: Sel, event: id) {
         let characters = get_characters(event);
 
         let keycode: c_ushort = msg_send![event, keyCode];
-        let virtual_keycode = to_virtual_key_code(keycode)
+        let virtual_keycode = to_virtual_keycode(keycode)
             .or_else(|| {
-                check_additional_virtual_key_codes(&characters)
+                check_function_keys(&characters)
             });
         let scancode = keycode as u32;
         let window_event = Event::WindowEvent {
@@ -568,7 +557,7 @@ extern fn key_up(this: &Object, _sel: Sel, event: id) {
             },
         };
 
-        state.pending_events.access(|pending| pending.queue_event(window_event));
+        AppState::queue_event(window_event);
     }
 }
 
@@ -616,12 +605,12 @@ extern fn flags_changed(this: &Object, _sel: Sel, event: id) {
             events.push_back(window_event);
         }
 
-        state.pending_events.access(|pending| for event in events {
-            pending.queue_event(Event::WindowEvent {
+        for event in events {
+            AppState::queue_event(Event::WindowEvent {
                 window_id: WindowId(get_window_id(state.nswindow)),
                 event,
             });
-        });
+        }
     }
 }
 
@@ -656,7 +645,7 @@ extern fn cancel_operation(this: &Object, _sel: Sel, _sender: id) {
         let state = &mut *(state_ptr as *mut ViewState);
 
         let scancode = 0x2f;
-        let virtual_keycode = to_virtual_key_code(scancode);
+        let virtual_keycode = to_virtual_keycode(scancode);
         debug_assert_eq!(virtual_keycode, Some(VirtualKeyCode::Period));
 
         let event: id = msg_send![NSApp(), currentEvent];
@@ -674,9 +663,7 @@ extern fn cancel_operation(this: &Object, _sel: Sel, _sender: id) {
             },
         };
 
-        state.pending_events.access(|pending| {
-            pending.queue_event(window_event);
-        });
+        AppState::queue_event(window_event);
     }
 }
 
@@ -695,7 +682,7 @@ fn mouse_click(this: &Object, event: id, button: MouseButton, button_state: Elem
             },
         };
 
-        state.pending_events.access(|pending| pending.queue_event(window_event));
+        AppState::queue_event(window_event);
     }
 }
 
@@ -755,7 +742,7 @@ fn mouse_motion(this: &Object, event: id) {
             },
         };
 
-        state.pending_events.access(|pending| pending.queue_event(window_event));
+        AppState::queue_event(window_event);
     }
 }
 
@@ -805,10 +792,8 @@ extern fn mouse_entered(this: &Object, _sel: Sel, event: id) {
             }
         };
 
-        state.pending_events.access(|pending| {
-            pending.queue_event(enter_event);
-            pending.queue_event(move_event);
-        });
+        AppState::queue_event(enter_event);
+        AppState::queue_event(move_event);
     }
 }
 
@@ -823,9 +808,7 @@ extern fn mouse_exited(this: &Object, _sel: Sel, _event: id) {
             event: WindowEvent::CursorLeft { device_id: DEVICE_ID },
         };
 
-        state.pending_events.access(|pending| {
-            pending.queue_event(window_event);
-        });
+        AppState::queue_event(window_event);
     }
 }
 
@@ -864,10 +847,8 @@ extern fn scroll_wheel(this: &Object, _sel: Sel, event: id) {
             },
         };
 
-        state.pending_events.access(|pending| {
-            pending.queue_event(device_event);
-            pending.queue_event(window_event);
-        });
+        AppState::queue_event(device_event);
+        AppState::queue_event(window_event);
     }
 }
 
@@ -889,9 +870,7 @@ extern fn pressure_change_with_event(this: &Object, _sel: Sel, event: id) {
             },
         };
 
-        state.pending_events.access(|pending| {
-            pending.queue_event(window_event);
-        });
+        AppState::queue_event(window_event);
     }
 }
 

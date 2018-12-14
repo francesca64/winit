@@ -1,7 +1,7 @@
 use cocoa::base::id;
 use objc::{runtime::{Class, Object, Sel, BOOL, YES}, declare::ClassDecl};
 
-use platform_impl::platform::event_loop::HANDLER;
+use platform_impl::platform::app_state::AppState;
 
 pub struct AppDelegateClass(pub *const Class);
 unsafe impl Send for AppDelegateClass {}
@@ -43,7 +43,7 @@ lazy_static! {
 
 extern fn did_finish_launching(_: &Object, _: Sel, _: id) -> BOOL {
     trace!("Triggered `didFinishLaunching`");
-    HANDLER.lock().unwrap().launched();
+    AppState::launched();
     trace!("Completed `didFinishLaunching`");
     YES
 }

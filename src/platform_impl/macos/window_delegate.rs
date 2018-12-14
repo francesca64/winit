@@ -1,20 +1,14 @@
-use std::{f64, os::raw::c_void, sync::{Arc, Mutex, Weak}};
+use std::{f64, os::raw::c_void, sync::{Arc, Weak}};
 
 use cocoa::{
-    appkit::{self, NSView, NSWindow},
-    base::{id, nil},
+    appkit::{self, NSView, NSWindow}, base::{id, nil},
     foundation::NSAutoreleasePool,
 };
 use objc::{runtime::{Class, Object, Sel, BOOL, YES, NO}, declare::ClassDecl};
 
-use {
-    dpi::LogicalSize,
-    event::{Event, WindowEvent},
-    window::WindowId,
-};
+use {dpi::LogicalSize, event::{Event, WindowEvent}, window::WindowId};
 use platform_impl::platform::{
-    event_loop::{EventLoopWindowTarget, PendingEvents, WindowList},
-    util::{self, Access, IdRef},
+    app_state::AppState, util::{self, IdRef},
     window::{get_window_id, UnownedWindow},
 };
 
@@ -23,8 +17,6 @@ pub struct WindowDelegateState {
     nsview: IdRef, // never changes
 
     window: Weak<UnownedWindow>,
-    pending_events: Weak<Mutex<PendingEvents>>,
-    window_list: Weak<Mutex<WindowList>>,
 
     // TODO: It's possible for delegate methods to be called asynchronously,
     // causing data races / `RefCell` panics.
@@ -41,9 +33,8 @@ pub struct WindowDelegateState {
 }
 
 impl WindowDelegateState {
-    pub fn new<T: 'static>(
+    pub fn new(
         window: &Arc<UnownedWindow>,
-        elw_target: &EventLoopWindowTarget<T>,
         initial_fullscreen: bool,
     ) -> Self {
         let dpi_factor = window.get_hidpi_factor();
@@ -52,8 +43,6 @@ impl WindowDelegateState {
             nswindow: window.nswindow.clone(),
             nsview: window.nsview.clone(),
             window: Arc::downgrade(&window),
-            pending_events: Arc::downgrade(&elw_target.pending_events),
-            window_list: Arc::downgrade(&elw_target.window_list),
             initial_fullscreen,
             previous_position: None,
             previous_dpi_factor: dpi_factor,
@@ -80,9 +69,7 @@ impl WindowDelegateState {
             window_id: WindowId(get_window_id(*self.nswindow)),
             event,
         };
-        trace!("Locked pending events in `emit_event`");
-        self.pending_events.access(|pending| pending.queue_event(event));
-        trace!("Unlocked pending events in `emit_event`");
+        AppState::queue_event(event);
     }
 
     pub fn emit_resize_event(&mut self) {
@@ -254,12 +241,7 @@ extern fn window_should_close(this: &Object, _: Sel, _: id) -> BOOL {
 
 extern fn window_will_close(this: &Object, _: Sel, _: id) {
     trace!("Triggered `windowWillClose`");
-    with_state(this, |state| {
-        state.emit_event(WindowEvent::Destroyed);
-        state.window_list.access(|windows| {
-            windows.remove_window(get_window_id(*state.nswindow));
-        });
-    });
+    with_state(this, |state| state.emit_event(WindowEvent::Destroyed));
     trace!("Completed `windowWillClose`");
 }
 

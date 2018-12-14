@@ -1,7 +1,10 @@
-use cocoa::{appkit, base::id};
+use std::collections::VecDeque;
+
+use cocoa::{appkit::{self, NSEvent}, base::id};
 use objc::{declare::ClassDecl, runtime::{Class, Object, Sel}};
 
-use platform_impl::platform::util;
+use event::{DeviceEvent, Event};
+use platform_impl::platform::{app_state::AppState, DEVICE_ID, util};
 
 pub struct AppClass(pub *const Class);
 unsafe impl Send for AppClass {}
@@ -26,7 +29,6 @@ lazy_static! {
 // Fun fact: Firefox still has this bug! (https://bugzilla.mozilla.org/show_bug.cgi?id=1299553)
 extern fn send_event(this: &Object, _sel: Sel, event: id) {
     unsafe {
-        use self::appkit::NSEvent;
         // For posterity, there are some undocumented event types
         // (https://github.com/servo/cocoa-rs/issues/155)
         // but that doesn't really matter here.
@@ -39,8 +41,48 @@ extern fn send_event(this: &Object, _sel: Sel, event: id) {
             let key_window: id = msg_send![this, keyWindow];
             let _: () = msg_send![key_window, sendEvent:event];
         } else {
+            maybe_dispatch_device_event(event);
             let superclass = util::superclass(this);
             let _: () = msg_send![super(this, superclass), sendEvent:event];
         }
+    }
+}
+
+unsafe fn maybe_dispatch_device_event(event: id) {
+    let event_type = event.eventType();
+    match event_type {
+        appkit::NSMouseMoved |
+        appkit::NSLeftMouseDragged |
+        appkit::NSOtherMouseDragged |
+        appkit::NSRightMouseDragged => {
+            let mut events = VecDeque::with_capacity(3);
+
+            let delta_x = event.deltaX() as f64;
+            let delta_y = event.deltaY() as f64;
+
+            if delta_x != 0.0 {
+                events.push_back(Event::DeviceEvent {
+                    device_id: DEVICE_ID,
+                    event: DeviceEvent::Motion { axis: 0, value: delta_x },
+                });
+            }
+
+            if delta_y != 0.0 {
+                events.push_back(Event::DeviceEvent {
+                    device_id: DEVICE_ID,
+                    event: DeviceEvent::Motion { axis: 1, value: delta_y },
+                });
+            }
+
+            if delta_x != 0.0 || delta_y != 0.0 {
+                events.push_back(Event::DeviceEvent {
+                    device_id: DEVICE_ID,
+                    event: DeviceEvent::MouseMotion { delta: (delta_x, delta_y) },
+                });
+            }
+
+            AppState::queue_events(events);
+        },
+        _ => (),
     }
 }

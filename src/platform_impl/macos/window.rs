@@ -1,6 +1,6 @@
 use std::{
     collections::VecDeque, f64, os::raw::c_void,
-    sync::{Arc, atomic::{Ordering, AtomicBool}, Mutex, Weak},
+    sync::{Arc, atomic::{Ordering, AtomicBool}, Mutex},
 };
 
 use cocoa::{
@@ -22,8 +22,7 @@ use {
 };
 use platform::macos::{ActivationPolicy, WindowExtMacOS};
 use platform_impl::platform::{
-    {ffi, util::{self, Access, IdRef}},
-    event_loop::{EventLoopWindowTarget, PendingEvents, WindowList},
+    {ffi, util::{self, IdRef}},
     monitor::{self, MonitorHandle},
     view::{new_view, set_ime_spot},
     window_delegate::{WindowDelegate, WindowDelegateState},
@@ -68,11 +67,8 @@ fn create_app(activation_policy: ActivationPolicy) -> Option<id> {
     }
 }
 
-unsafe fn create_view(
-    nswindow: id,
-    pending_events: Weak<Mutex<PendingEvents>>,
-) -> Option<IdRef> {
-    new_view(nswindow, pending_events).non_nil().map(|nsview| {
+unsafe fn create_view(nswindow: id) -> Option<IdRef> {
+    new_view(nswindow).non_nil().map(|nsview| {
         nsview.setWantsBestResolutionOpenGLSurface_(YES);
 
         // On Mojave, views automatically become layer-backed shortly after being added to
@@ -236,7 +232,6 @@ pub struct UnownedWindow {
     pub nswindow: IdRef, // never changes
     pub nsview: IdRef, // never changes
     input_context: IdRef, // never changes
-    window_list: Weak<Mutex<WindowList>>,
     pub shared_state: Mutex<SharedState>,
     decorations: AtomicBool,
     cursor_hidden: AtomicBool,
@@ -246,8 +241,7 @@ unsafe impl Send for UnownedWindow {}
 unsafe impl Sync for UnownedWindow {}
 
 impl UnownedWindow {
-    pub fn new<T: 'static>(
-        elw_target: &EventLoopWindowTarget<T>,
+    pub fn new(
         mut win_attribs: WindowAttributes,
         pl_attribs: PlatformSpecificWindowBuilderAttributes,
     ) -> Result<(Arc<Self>, WindowDelegate), CreationError> {
@@ -269,9 +263,7 @@ impl UnownedWindow {
             CreationError::OsError(format!("Couldn't create `NSWindow`"))
         })?;
 
-        let nsview = unsafe {
-            create_view(*nswindow, Arc::downgrade(&elw_target.pending_events))
-        }.ok_or_else(|| {
+        let nsview = unsafe { create_view(*nswindow) }.ok_or_else(|| {
             let _: () = unsafe { msg_send![autoreleasepool, drain] };
             CreationError::OsError(format!("Couldn't create `NSView`"))
         })?;
@@ -311,7 +303,6 @@ impl UnownedWindow {
             nsview,
             nswindow,
             input_context,
-            window_list: Arc::downgrade(&elw_target.window_list),
             shared_state: Mutex::new(win_attribs.into()),
             decorations: AtomicBool::new(decorations),
             cursor_hidden: Default::default(),
@@ -319,7 +310,6 @@ impl UnownedWindow {
 
         let delegate = WindowDelegate::new(WindowDelegateState::new(
             &window,
-            elw_target,
             fullscreen.is_some(),
         ));
 
@@ -463,7 +453,7 @@ impl UnownedWindow {
             }
             unsafe { util::set_style_mask(*self.nswindow, *self.nsview, mask) };
         } // Otherwise, we don't change the mask until we exit fullscreen.
-        trace!("Unlocked shared state in `set_decorations`");
+        trace!("Unlocked shared state in `set_resizable`");
     }
 
     pub fn set_cursor(&self, cursor: MouseCursor) {
@@ -528,9 +518,7 @@ impl UnownedWindow {
 
     #[inline]
     pub fn get_hidpi_factor(&self) -> f64 {
-        unsafe {
-            NSWindow::backingScaleFactor(*self.nswindow) as f64
-        }
+        unsafe { NSWindow::backingScaleFactor(*self.nswindow) as _ }
     }
 
     #[inline]
@@ -794,12 +782,9 @@ impl Drop for UnownedWindow {
     fn drop(&mut self) {
         trace!("Dropping `UnownedWindow` ({:?})", self as *mut _);
 
-        let id = self.id();
-        self.window_list.access(|windows| windows.remove_window(id));
-
         // nswindow::close uses autorelease
         // so autorelease pool
-        let autoreleasepool = unsafe { NSAutoreleasePool::new(nil) };
+        let pool = unsafe { NSAutoreleasePool::new(nil) };
 
         // Close the window if it has not yet been closed.
         let nswindow = *self.nswindow;
@@ -807,7 +792,7 @@ impl Drop for UnownedWindow {
             let _: () = unsafe { msg_send![nswindow, close] };
         }
 
-        let _: () = unsafe { msg_send![autoreleasepool, drain] };
+        let _: () = unsafe { msg_send![pool, drain] };
     }
 }
 

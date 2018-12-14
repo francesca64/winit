@@ -1,6 +1,6 @@
 use std::{self, ptr, os::raw::*, time::Instant};
 
-use platform_impl::platform::event_loop::HANDLER;
+use platform_impl::platform::app_state::AppState;
 
 #[link(name = "CoreFoundation", kind = "framework")]
 extern {
@@ -125,17 +125,15 @@ extern fn control_flow_begin_handler(
     activity: CFRunLoopActivity,
     _: *mut c_void,
 ) {
-    unsafe {
-        #[allow(non_upper_case_globals)]
-        match activity {
-            kCFRunLoopAfterWaiting => {
-                //trace!("Triggered `CFRunLoopAfterWaiting`");
-                HANDLER.lock().unwrap().wakeup();
-                //trace!("Completed `CFRunLoopAfterWaiting`");
-            },
-            kCFRunLoopEntry => unimplemented!(), // not expected to ever happen
-            _ => unreachable!(),
-        }
+    #[allow(non_upper_case_globals)]
+    match activity {
+        kCFRunLoopAfterWaiting => {
+            //trace!("Triggered `CFRunLoopAfterWaiting`");
+            AppState::wakeup();
+            //trace!("Completed `CFRunLoopAfterWaiting`");
+        },
+        kCFRunLoopEntry => unimplemented!(), // not expected to ever happen
+        _ => unreachable!(),
     }
 }
 
@@ -146,17 +144,15 @@ extern fn control_flow_end_handler(
     activity: CFRunLoopActivity,
     _: *mut c_void,
 ) {
-    unsafe {
-        #[allow(non_upper_case_globals)]
-        match activity {
-            kCFRunLoopBeforeWaiting => {
-                //trace!("Triggered `CFRunLoopBeforeWaiting`");
-                HANDLER.lock().unwrap().cleared();
-                //trace!("Completed `CFRunLoopBeforeWaiting`");
-            },
-            kCFRunLoopExit => (),//unimplemented!(), // not expected to ever happen
-            _ => unreachable!(),
-        }
+    #[allow(non_upper_case_globals)]
+    match activity {
+        kCFRunLoopBeforeWaiting => {
+            //trace!("Triggered `CFRunLoopBeforeWaiting`");
+            AppState::cleared();
+            //trace!("Completed `CFRunLoopBeforeWaiting`");
+        },
+        kCFRunLoopExit => (),//unimplemented!(), // not expected to ever happen
+        _ => unreachable!(),
     }
 }
 

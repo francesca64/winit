@@ -1,4 +1,4 @@
-use std::{ops::{BitAnd, Deref}, sync::{Arc, Mutex, Weak}};
+use std::ops::Deref;
 
 use cocoa::{
     appkit::{NSApp, NSWindowStyleMask},
@@ -8,6 +8,7 @@ use cocoa::{
 use core_graphics::display::CGDisplay;
 use objc::runtime::{BOOL, Class, Object, Sel, YES};
 
+pub use util::*;
 use platform_impl::platform::ffi;
 
 pub const EMPTY_RANGE: ffi::NSRange = ffi::NSRange {
@@ -63,37 +64,11 @@ impl Clone for IdRef {
     }
 }
 
-pub trait Access<T> {
-    fn access<F: FnOnce(&mut T) -> O, O>(&self, callback: F) -> Option<O>;
-}
-
-impl<T> Access<T> for Arc<Mutex<T>> {
-    fn access<F: FnOnce(&mut T) -> O, O>(&self, callback: F) -> Option<O> {
-        self.lock()
-            .ok()
-            .map(|ref mut mutex_guard| callback(mutex_guard))
-    }
-}
-
-impl<T> Access<T> for Weak<Mutex<T>> {
-    fn access<F: FnOnce(&mut T) -> O, O>(&self, callback: F) -> Option<O> {
-        self.upgrade()
-            .and_then(|arc| arc.access(callback))
-    }
-}
-
 // For consistency with other platforms, this will...
 // 1. translate the bottom-left window corner into the top-left window corner
 // 2. translate the coordinate from a bottom-left origin coordinate system to a top-left one
 pub fn bottom_left_to_top_left(rect: NSRect) -> f64 {
     CGDisplay::main().pixels_high() as f64 - (rect.origin.y + rect.size.height)
-}
-
-pub fn has_flag<T>(bitset: T, flag: T) -> bool
-where T:
-    Copy + PartialEq + BitAnd<T, Output = T>
-{
-    bitset & flag == flag
 }
 
 pub unsafe fn set_style_mask(nswindow: id, nsview: id, mask: NSWindowStyleMask) {

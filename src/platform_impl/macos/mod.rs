@@ -2,6 +2,8 @@
 
 mod app;
 mod app_delegate;
+mod app_state;
+mod event;
 mod event_loop;
 mod ffi;
 mod monitor;
@@ -47,18 +49,11 @@ impl Deref for Window {
 
 impl Window {
     pub fn new<T: 'static>(
-        elw_target: &EventLoopWindowTarget<T>,
+        _window_target: &EventLoopWindowTarget<T>,
         attributes: WindowAttributes,
         pl_attribs: PlatformSpecificWindowBuilderAttributes,
     ) -> Result<Self, CreationError> {
-        UnownedWindow::new(elw_target, attributes, pl_attribs)
-            .map(|(window, _delegate)| {
-                elw_target
-                    .window_list
-                    .lock()
-                    .unwrap()
-                    .insert_window(Arc::downgrade(&window));
-                Window { window, _delegate }
-            })
+        let (window, _delegate) = UnownedWindow::new(attributes, pl_attribs)?;
+        Ok(Window { window, _delegate })
     }
 }

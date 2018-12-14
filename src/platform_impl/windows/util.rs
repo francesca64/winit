@@ -21,12 +21,7 @@ use winapi::um::winnt::{
 };
 use winapi::um::winuser;
 
-pub fn has_flag<T>(bitset: T, flag: T) -> bool
-where T:
-    Copy + PartialEq + BitAnd<T, Output = T>
-{
-    bitset & flag == flag
-}
+pub use util::has_flag;
 
 pub fn wchar_to_string(wchar: &[wchar_t]) -> String {
     String::from_utf16_lossy(wchar).to_string()
