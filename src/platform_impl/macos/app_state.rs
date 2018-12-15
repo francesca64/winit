@@ -12,8 +12,7 @@ use {
 use platform_impl::platform::{observer::EventLoopWaker, util::Never};
 
 lazy_static! {
-    static ref HANDLER: Mutex<Handler> = Default::default();
-    static ref EVENTS: Mutex<VecDeque<Event<Never>>> = Default::default();
+    static ref HANDLER: Handler = Default::default();
 }
 
 impl Event<Never> {
@@ -26,7 +25,7 @@ impl Event<Never> {
 }
 
 pub trait EventHandler: Debug {
-    fn handle_nonuser_event(&mut self, event: Event<Never>, control_flow: *mut ControlFlow);
+    fn handle_nonuser_event(&mut self, event: Event<Never>, control_flow: &mut ControlFlow);
     //fn handle_user_events(&mut self, control_flow: &mut ControlFlow);
 }
 
@@ -48,11 +47,11 @@ where
     F: 'static + FnMut(Event<T>, &RootWindowTarget<T>, &mut ControlFlow),
     T: 'static,
 {
-    fn handle_nonuser_event(&mut self, event: Event<Never>, control_flow: *mut ControlFlow) {
+    fn handle_nonuser_event(&mut self, event: Event<Never>, control_flow: &mut ControlFlow) {
         (self.callback)(
             event.userify(),
             &self.window_target,
-            unsafe { &mut *control_flow },
+            control_flow,
         );
     }
 
@@ -69,20 +68,47 @@ where
 
 #[derive(Default)]
 struct Handler {
-    control_flow: ControlFlow,
-    control_flow_prev: ControlFlow,
-    callback: Option<Box<dyn EventHandler>>,
-    waker: EventLoopWaker,
+    control_flow: Mutex<ControlFlow>,
+    control_flow_prev: Mutex<ControlFlow>,
+    callback: Mutex<Option<Box<dyn EventHandler>>>,
+    pending_events: Mutex<VecDeque<Event<Never>>>,
+    waker: Mutex<EventLoopWaker>,
 }
 
 unsafe impl Send for Handler {}
 unsafe impl Sync for Handler {}
 
 impl Handler {
-    fn handle_nonuser_event(&mut self, event: Event<Never>) {
-        let control_flow = &mut self.control_flow;
-        if let Some(ref mut callback) = self.callback {
-            callback.handle_nonuser_event(event, control_flow);
+    fn events<'a>(&'a self) -> MutexGuard<'a, VecDeque<Event<Never>>> {
+        self.pending_events.lock().unwrap()
+    }
+
+    fn waker<'a>(&'a self) -> MutexGuard<'a, EventLoopWaker> {
+        self.waker.lock().unwrap()
+    }
+
+    fn get_control_flow_and_update_prev(&self) -> ControlFlow {
+        let control_flow = self.control_flow.lock().unwrap();
+        *self.control_flow_prev.lock().unwrap() = *control_flow;
+        *control_flow
+    }
+
+    fn get_old_and_new_control_flow(&self) -> (ControlFlow, ControlFlow) {
+        let old = *self.control_flow_prev.lock().unwrap();
+        let new = *self.control_flow.lock().unwrap();
+        (old, new)
+    }
+
+    fn take_events(&self) -> VecDeque<Event<Never>> {
+        mem::replace(&mut *self.events(), Default::default())
+    }
+
+    fn handle_nonuser_event(&self, event: Event<Never>) {
+        if let Some(ref mut callback) = *self.callback.lock().unwrap() {
+            callback.handle_nonuser_event(
+                event,
+                &mut *self.control_flow.lock().unwrap(),
+            );
         }
     }
 }
@@ -90,46 +116,29 @@ impl Handler {
 pub enum AppState {}
 
 impl AppState {
-    fn handler() -> MutexGuard<'static, Handler> {
-        HANDLER.lock().unwrap()
-    }
-
-    fn events() -> MutexGuard<'static, VecDeque<Event<Never>>> {
-        EVENTS.lock().unwrap()
-    }
-
     pub fn set_callback<F, T>(callback: F, window_target: RootWindowTarget<T>)
     where
         F: 'static + FnMut(Event<T>, &RootWindowTarget<T>, &mut ControlFlow),
         T: 'static,
     {
-        Self::handler().callback = Some(Box::new(EventLoopHandler {
+        *HANDLER.callback.lock().unwrap() = Some(Box::new(EventLoopHandler {
             callback,
             window_target,
         }));
     }
 
     pub fn exit() -> ! {
-        let mut handler = Self::handler();
-        if let Some(mut callback) = handler.callback.take() {
-            callback.handle_nonuser_event(
-                Event::LoopDestroyed,
-                &mut handler.control_flow,
-            );
-        }
+        HANDLER.handle_nonuser_event(Event::LoopDestroyed);
         std::process::exit(0)
     }
 
     pub fn launched() {
-        let mut handler = Self::handler();
-        handler.waker.start();
-        handler.handle_nonuser_event(Event::NewEvents(StartCause::Init));
+        HANDLER.waker().start();
+        HANDLER.handle_nonuser_event(Event::NewEvents(StartCause::Init));
     }
 
     pub fn wakeup() {
-        let mut handler = Self::handler();
-        handler.control_flow_prev = handler.control_flow;
-        let cause = match handler.control_flow {
+        let cause = match HANDLER.get_control_flow_and_update_prev() {
             ControlFlow::Poll => StartCause::Poll,
             /*ControlFlow::Wait => StartCause::WaitCancelled {
                 start,
@@ -151,33 +160,29 @@ impl AppState {
             ControlFlow::Exit => StartCause::Poll,//panic!("unexpected `ControlFlow::Exit`"),
             _ => unimplemented!(),
         };
-        handler.handle_nonuser_event(Event::NewEvents(cause));
+        HANDLER.handle_nonuser_event(Event::NewEvents(cause));
     }
 
     pub fn queue_event(event: Event<Never>) {
-        Self::events().push_back(event);
+        HANDLER.events().push_back(event);
     }
 
     pub fn queue_events(mut events: VecDeque<Event<Never>>) {
-        Self::events().append(&mut events);
+        HANDLER.events().append(&mut events);
     }
 
     pub fn cleared() {
-        let mut handler = Self::handler();
-        handler.handle_nonuser_event(Event::EventsCleared);
-        let events = mem::replace(&mut *Self::events(), Default::default());
-        for event in events {
-            handler.handle_nonuser_event(event);
+        HANDLER.handle_nonuser_event(Event::EventsCleared);
+        for event in HANDLER.take_events() {
+            HANDLER.handle_nonuser_event(event);
         }
-        let old = handler.control_flow_prev;
-        let new = handler.control_flow;
-        match (old, new) {
+        match HANDLER.get_old_and_new_control_flow() {
             (ControlFlow::Poll, ControlFlow::Poll) => (),
             (ControlFlow::Wait, ControlFlow::Wait) => (),
             (ControlFlow::WaitUntil(old_instant), ControlFlow::WaitUntil(new_instant)) if old_instant == new_instant => (),
-            (_, ControlFlow::Wait) => handler.waker.stop(),
-            (_, ControlFlow::WaitUntil(new_instant)) => handler.waker.start_at(new_instant),
-            (_, ControlFlow::Poll) => handler.waker.start(),
+            (_, ControlFlow::Wait) => HANDLER.waker().stop(),
+            (_, ControlFlow::WaitUntil(new_instant)) => HANDLER.waker().start_at(new_instant),
+            (_, ControlFlow::Poll) => HANDLER.waker().start(),
             (_, ControlFlow::Exit) => {
                 let _: () = unsafe { msg_send![NSApp(), stop:nil] };
             },
