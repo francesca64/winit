@@ -2,7 +2,7 @@ extern crate winit;
 
 use std::collections::HashMap;
 use winit::window::Window;
-use winit::event::{Event, WindowEvent, ElementState, KeyboardInput};
+use winit::event::{Event, WindowEvent, ElementState, KeyboardInput, VirtualKeyCode};
 use winit::event_loop::{EventLoop, ControlFlow};
 
 fn main() {
@@ -21,19 +21,23 @@ fn main() {
                 match event {
                     WindowEvent::CloseRequested => {
                         println!("Window {:?} has received the signal to close", window_id);
-
                         // This drops the window, causing it to close.
                         windows.remove(&window_id);
-
+                    },
+                    WindowEvent::Destroyed => {
                         if windows.is_empty() {
                             *control_flow = ControlFlow::Exit;
                         }
                     },
-                    WindowEvent::KeyboardInput { input: KeyboardInput { state: ElementState::Pressed, .. }, .. } => {
-                        let window = Window::new(&event_loop).unwrap();
-                        windows.insert(window.id(), window);
+                    WindowEvent::KeyboardInput { input: KeyboardInput { state: ElementState::Pressed, virtual_keycode, .. }, .. } => {
+                        if Some(VirtualKeyCode::Escape) == virtual_keycode {
+                            windows.remove(&window_id);
+                        } else {
+                            let window = Window::new(&event_loop).unwrap();
+                            windows.insert(window.id(), window);
+                        }
                     },
-                    _ => ()
+                    _ => (),
                 }
             }
             _ => (),

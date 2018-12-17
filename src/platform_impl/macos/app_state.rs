@@ -1,6 +1,6 @@
 use std::{
     self, collections::VecDeque, fmt::{self, Debug, Formatter},
-    hint::unreachable_unchecked, mem, sync::{Mutex, MutexGuard},
+    hint::unreachable_unchecked, mem, sync::{Mutex, MutexGuard}, time::Instant,
 };
 
 use cocoa::{appkit::NSApp, base::nil};
@@ -70,6 +70,7 @@ where
 struct Handler {
     control_flow: Mutex<ControlFlow>,
     control_flow_prev: Mutex<ControlFlow>,
+    start_time: Mutex<Option<Instant>>,
     callback: Mutex<Option<Box<dyn EventHandler>>>,
     pending_events: Mutex<VecDeque<Event<Never>>>,
     waker: Mutex<EventLoopWaker>,
@@ -97,6 +98,14 @@ impl Handler {
         let old = *self.control_flow_prev.lock().unwrap();
         let new = *self.control_flow.lock().unwrap();
         (old, new)
+    }
+
+    fn get_start_time(&self) -> Option<Instant> {
+        *self.start_time.lock().unwrap()
+    }
+
+    fn update_start_time(&self) {
+        *self.start_time.lock().unwrap() = Some(Instant::now());
     }
 
     fn take_events(&self) -> VecDeque<Event<Never>> {
@@ -138,9 +147,10 @@ impl AppState {
     }
 
     pub fn wakeup() {
+        let start = HANDLER.get_start_time().unwrap();
         let cause = match HANDLER.get_control_flow_and_update_prev() {
             ControlFlow::Poll => StartCause::Poll,
-            /*ControlFlow::Wait => StartCause::WaitCancelled {
+            ControlFlow::Wait => StartCause::WaitCancelled {
                 start,
                 requested_resume: None,
             },
@@ -156,9 +166,8 @@ impl AppState {
                         requested_resume: Some(requested_resume),
                     }
                 }
-            },*/
+            },
             ControlFlow::Exit => StartCause::Poll,//panic!("unexpected `ControlFlow::Exit`"),
-            _ => unimplemented!(),
         };
         HANDLER.handle_nonuser_event(Event::NewEvents(cause));
     }
@@ -176,6 +185,7 @@ impl AppState {
         for event in HANDLER.take_events() {
             HANDLER.handle_nonuser_event(event);
         }
+        HANDLER.update_start_time();
         match HANDLER.get_old_and_new_control_flow() {
             (ControlFlow::Poll, ControlFlow::Poll) => (),
             (ControlFlow::Wait, ControlFlow::Wait) => (),
