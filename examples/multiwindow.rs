@@ -15,7 +15,10 @@ fn main() {
     }
 
     event_loop.run(move |event, event_loop, control_flow| {
-        *control_flow = ControlFlow::Wait;
+        *control_flow = match !windows.is_empty() {
+            true => ControlFlow::Wait,
+            false => ControlFlow::Exit,
+        };
         match event {
             Event::WindowEvent { event, window_id } => {
                 match event {
@@ -23,11 +26,6 @@ fn main() {
                         println!("Window {:?} has received the signal to close", window_id);
                         // This drops the window, causing it to close.
                         windows.remove(&window_id);
-                    },
-                    WindowEvent::Destroyed => {
-                        if windows.is_empty() {
-                            *control_flow = ControlFlow::Exit;
-                        }
                     },
                     WindowEvent::KeyboardInput { input: KeyboardInput { state: ElementState::Pressed, virtual_keycode, .. }, .. } => {
                         if Some(VirtualKeyCode::Escape) == virtual_keycode {

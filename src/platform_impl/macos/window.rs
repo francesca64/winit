@@ -208,7 +208,7 @@ pub struct SharedState {
     pub fullscreen: Option<RootMonitorHandle>,
     pub maximized: bool,
     standard_frame: Option<NSRect>,
-    saved_style: Option<NSWindowStyleMask>,
+    pub saved_style: Option<NSWindowStyleMask>,
 }
 
 impl From<WindowAttributes> for SharedState {
@@ -232,7 +232,7 @@ pub struct UnownedWindow {
     pub nswindow: IdRef, // never changes
     pub nsview: IdRef, // never changes
     input_context: IdRef, // never changes
-    pub shared_state: Mutex<SharedState>,
+    pub shared_state: Arc<Mutex<SharedState>>,
     decorations: AtomicBool,
     cursor_hidden: AtomicBool,
 }
@@ -251,20 +251,20 @@ impl UnownedWindow {
             }
         }
 
-        let autoreleasepool = unsafe { NSAutoreleasePool::new(nil) };
+        let pool = unsafe { NSAutoreleasePool::new(nil) };
 
         let nsapp = create_app(pl_attribs.activation_policy).ok_or_else(|| {
-            let _: () = unsafe { msg_send![autoreleasepool, drain] };
+            unsafe { pool.drain() };
             CreationError::OsError(format!("Couldn't create `NSApplication`"))
         })?;
 
         let nswindow = create_window(&win_attribs, &pl_attribs).ok_or_else(|| {
-            let _: () = unsafe { msg_send![autoreleasepool, drain] };
+            unsafe { pool.drain() };
             CreationError::OsError(format!("Couldn't create `NSWindow`"))
         })?;
 
         let nsview = unsafe { create_view(*nswindow) }.ok_or_else(|| {
-            let _: () = unsafe { msg_send![autoreleasepool, drain] };
+            unsafe { pool.drain() };
             CreationError::OsError(format!("Couldn't create `NSView`"))
         })?;
 
@@ -303,7 +303,7 @@ impl UnownedWindow {
             nsview,
             nswindow,
             input_context,
-            shared_state: Mutex::new(win_attribs.into()),
+            shared_state: Arc::new(Mutex::new(win_attribs.into())),
             decorations: AtomicBool::new(decorations),
             cursor_hidden: Default::default(),
         });
@@ -340,9 +340,25 @@ impl UnownedWindow {
             window.set_maximized(maximized);
         }
 
-        let _: () = unsafe { msg_send![autoreleasepool, drain] };
+        let _: () = unsafe { msg_send![pool, drain] };
 
         Ok((window, delegate))
+    }
+
+    fn set_style_mask_async(&self, mask: NSWindowStyleMask) {
+        unsafe { util::set_style_mask_async(
+            *self.nswindow,
+            *self.nsview,
+            mask,
+        ) };
+    }
+
+    fn set_style_mask_sync(&self, mask: NSWindowStyleMask) {
+        unsafe { util::set_style_mask_sync(
+            *self.nswindow,
+            *self.nsview,
+            mask,
+        ) };
     }
 
     pub fn id(&self) -> Id {
@@ -358,12 +374,13 @@ impl UnownedWindow {
 
     #[inline]
     pub fn show(&self) {
-        unsafe { NSWindow::makeKeyAndOrderFront_(*self.nswindow, nil); }
+        //unsafe { NSWindow::makeKeyAndOrderFront_(*self.nswindow, nil); }
+        unsafe { util::make_key_and_order_front_async(*self.nswindow) };
     }
 
     #[inline]
     pub fn hide(&self) {
-        unsafe { NSWindow::orderOut_(*self.nswindow, nil); }
+        unsafe { util::order_out_async(*self.nswindow) };
     }
 
     pub fn request_redraw(&self) {
@@ -395,14 +412,14 @@ impl UnownedWindow {
         let dummy = NSRect::new(
             NSPoint::new(
                 position.x,
-                // While it's true that we're setting the top-left position, it still needs to be
-                // in a bottom-left coordinate system.
+                // While it's true that we're setting the top-left position,
+                // it still needs to be in a bottom-left coordinate system.
                 CGDisplay::main().pixels_high() as f64 - position.y,
             ),
             NSSize::new(0f64, 0f64),
         );
         unsafe {
-            NSWindow::setFrameTopLeftPoint_(*self.nswindow, dummy.origin);
+            util::set_frame_top_left_point_async(*self.nswindow, dummy.origin);
         }
     }
 
@@ -421,7 +438,7 @@ impl UnownedWindow {
     #[inline]
     pub fn set_inner_size(&self, size: LogicalSize) {
         unsafe {
-            NSWindow::setContentSize_(*self.nswindow, NSSize::new(size.width as CGFloat, size.height as CGFloat));
+            util::set_content_size_async(*self.nswindow, size);
         }
     }
 
@@ -441,56 +458,105 @@ impl UnownedWindow {
 
     #[inline]
     pub fn set_resizable(&self, resizable: bool) {
-        trace!("Locked shared state in `set_resizable`");
-        let mut shared_state_lock = self.shared_state.lock().unwrap();
-        shared_state_lock.resizable = resizable;
-        if shared_state_lock.fullscreen.is_none() {
+        let fullscreen = {
+            trace!("Locked shared state in `set_resizable`");
+            let mut shared_state_lock = self.shared_state.lock().unwrap();
+            shared_state_lock.resizable = resizable;
+            trace!("Unlocked shared state in `set_resizable`");
+            shared_state_lock.fullscreen.is_some()
+        };
+        if !fullscreen {
             let mut mask = unsafe { self.nswindow.styleMask() };
             if resizable {
                 mask |= NSWindowStyleMask::NSResizableWindowMask;
             } else {
                 mask &= !NSWindowStyleMask::NSResizableWindowMask;
             }
-            unsafe { util::set_style_mask(*self.nswindow, *self.nsview, mask) };
+            self.set_style_mask_async(mask);
         } // Otherwise, we don't change the mask until we exit fullscreen.
-        trace!("Unlocked shared state in `set_resizable`");
     }
 
     pub fn set_cursor(&self, cursor: MouseCursor) {
+        enum CursorType {
+            Native(&'static str),
+            Undocumented(&'static str),
+            WebKit(&'static str),
+        }
+
         let cursor_name = match cursor {
-            MouseCursor::Arrow | MouseCursor::Default => "arrowCursor",
-            MouseCursor::Hand => "pointingHandCursor",
-            MouseCursor::Grabbing | MouseCursor::Grab => "closedHandCursor",
-            MouseCursor::Text => "IBeamCursor",
-            MouseCursor::VerticalText => "IBeamCursorForVerticalLayout",
-            MouseCursor::Copy => "dragCopyCursor",
-            MouseCursor::Alias => "dragLinkCursor",
-            MouseCursor::NotAllowed | MouseCursor::NoDrop => "operationNotAllowedCursor",
-            MouseCursor::ContextMenu => "contextualMenuCursor",
-            MouseCursor::Crosshair => "crosshairCursor",
-            MouseCursor::EResize => "resizeRightCursor",
-            MouseCursor::NResize => "resizeUpCursor",
-            MouseCursor::WResize => "resizeLeftCursor",
-            MouseCursor::SResize => "resizeDownCursor",
-            MouseCursor::EwResize | MouseCursor::ColResize => "resizeLeftRightCursor",
-            MouseCursor::NsResize | MouseCursor::RowResize => "resizeUpDownCursor",
+            MouseCursor::Arrow | MouseCursor::Default => CursorType::Native("arrowCursor"),
+            MouseCursor::Hand => CursorType::Native("pointingHandCursor"),
+            MouseCursor::Grabbing | MouseCursor::Grab => CursorType::Native("closedHandCursor"),
+            MouseCursor::Text => CursorType::Native("IBeamCursor"),
+            MouseCursor::VerticalText => CursorType::Native("IBeamCursorForVerticalLayout"),
+            MouseCursor::Copy => CursorType::Native("dragCopyCursor"),
+            MouseCursor::Alias => CursorType::Native("dragLinkCursor"),
+            MouseCursor::NotAllowed | MouseCursor::NoDrop => CursorType::Native("operationNotAllowedCursor"),
+            MouseCursor::ContextMenu => CursorType::Native("contextualMenuCursor"),
+            MouseCursor::Crosshair => CursorType::Native("crosshairCursor"),
+            MouseCursor::EResize => CursorType::Native("resizeRightCursor"),
+            MouseCursor::NResize => CursorType::Native("resizeUpCursor"),
+            MouseCursor::WResize => CursorType::Native("resizeLeftCursor"),
+            MouseCursor::SResize => CursorType::Native("resizeDownCursor"),
+            MouseCursor::EwResize | MouseCursor::ColResize => CursorType::Native("resizeLeftRightCursor"),
+            MouseCursor::NsResize | MouseCursor::RowResize => CursorType::Native("resizeUpDownCursor"),
 
-            // TODO: Find appropriate OSX cursors
-            MouseCursor::NeResize | MouseCursor::NwResize |
-            MouseCursor::SeResize | MouseCursor::SwResize |
-            MouseCursor::NwseResize | MouseCursor::NeswResize |
+            // Undocumented cursors: https://stackoverflow.com/a/46635398/5435443
+            MouseCursor::Help => CursorType::Undocumented("_helpCursor"),
+            MouseCursor::ZoomIn => CursorType::Undocumented("_zoomInCursor"),
+            MouseCursor::ZoomOut => CursorType::Undocumented("_zoomOutCursor"),
+            MouseCursor::NeResize => CursorType::Undocumented("_windowResizeNorthEastCursor"),
+            MouseCursor::NwResize => CursorType::Undocumented("_windowResizeNorthWestCursor"),
+            MouseCursor::SeResize => CursorType::Undocumented("_windowResizeSouthEastCursor"),
+            MouseCursor::SwResize => CursorType::Undocumented("_windowResizeSouthWestCursor"),
+            MouseCursor::NeswResize => CursorType::Undocumented("_windowResizeNorthEastSouthWestCursor"),
+            MouseCursor::NwseResize => CursorType::Undocumented("_windowResizeNorthWestSouthEastCursor"),
 
-            MouseCursor::Cell |
-            MouseCursor::Wait | MouseCursor::Progress | MouseCursor::Help |
-            MouseCursor::Move | MouseCursor::AllScroll | MouseCursor::ZoomIn |
-            MouseCursor::ZoomOut => "arrowCursor",
+            // While these are available, the former just loads a white arrow,
+            // and the latter loads an ugly deflated beachball!
+            // MouseCursor::Move => CursorType::Undocumented("_moveCursor"),
+            // MouseCursor::Wait => CursorType::Undocumented("_waitCursor"),
+
+            // An even more undocumented cursor...
+            // https://bugs.eclipse.org/bugs/show_bug.cgi?id=522349
+            // This is the wrong semantics for `Wait`, but it's the same as
+            // what's used in Safari and Chrome.
+            MouseCursor::Wait | MouseCursor::Progress => CursorType::Undocumented("busyButClickableCursor"),
+
+            // For the rest, we can just snatch the cursors from WebKit...
+            // They fit the style of the native cursors, and will seem
+            // completely standard to macOS users.
+            // https://stackoverflow.com/a/21786835/5435443
+            MouseCursor::Move | MouseCursor::AllScroll => CursorType::WebKit("move"),
+            MouseCursor::Cell => CursorType::WebKit("cell"),
         };
-        let sel = Sel::register(cursor_name);
-        let cls = class!(NSCursor);
-        unsafe {
-            use objc::Message;
-            let cursor: id = cls.send_message(sel, ()).unwrap();
-            let _: () = msg_send![cursor, set];
+
+        let class = class!(NSCursor);
+        match cursor_name {
+            CursorType::Native(cursor_name) => {
+                let sel = Sel::register(cursor_name);
+                unsafe {
+                    let cursor: id = msg_send![class, performSelector:sel];
+                    let _: () = msg_send![cursor, set];
+                }
+            },
+            CursorType::Undocumented(cursor_name) => {
+                let sel = Sel::register(cursor_name);
+                unsafe {
+                    let sel = if msg_send![class, respondsToSelector:sel] {
+                        sel
+                    } else {
+                        warn!("Cursor `{}` appears to be invalid", cursor_name);
+                        sel!(arrowCursor)
+                    };
+                    let cursor: id = msg_send![class, performSelector:sel];
+                    let _: () = msg_send![cursor, set];
+                }
+            },
+            CursorType::WebKit(cursor_name) => unsafe {
+                let cursor = util::load_webkit_cursor(cursor_name);
+                let _: () = msg_send![cursor, set];
+            },
         }
     }
 
@@ -546,14 +612,14 @@ impl UnownedWindow {
             | NSWindowStyleMask::NSResizableWindowMask;
         let needs_temp_mask = !curr_mask.contains(required);
         if needs_temp_mask {
-            unsafe { util::set_style_mask(*self.nswindow, *self.nsview, required) };
+            self.set_style_mask_sync(required);
         }
 
         let is_zoomed: BOOL = unsafe { msg_send![*self.nswindow, isZoomed] };
 
         // Roll back temp styles
         if needs_temp_mask {
-            unsafe { util::set_style_mask(*self.nswindow, *self.nsview, curr_mask) };
+            self.set_style_mask_sync(curr_mask);
         }
 
         is_zoomed != 0
@@ -577,7 +643,7 @@ impl UnownedWindow {
                 }
             };
 
-            unsafe { util::set_style_mask(*self.nswindow, *self.nsview, mask) };
+            self.set_style_mask_async(mask);
             shared_state_lock.maximized
         };
         trace!("Unocked shared state in `restore_state_from_fullscreen`");
@@ -627,63 +693,55 @@ impl UnownedWindow {
         trace!("Unlocked shared state in `set_maximized`");
     }
 
-    /// TODO: Right now set_fullscreen do not work on switching monitors
-    /// in fullscreen mode
+    // TODO: `set_fullscreen` is only usable if you fullscreen on the same
+    // monitor the window's currently on.
     #[inline]
     pub fn set_fullscreen(&self, monitor: Option<RootMonitorHandle>) {
-        trace!("Locked shared state in `set_fullscreen`");
-        let mut shared_state_lock = self.shared_state.lock().unwrap();
-
         let not_fullscreen = {
+            trace!("Locked shared state in `set_fullscreen`");
+            let mut shared_state_lock = self.shared_state.lock().unwrap();
             let current = &shared_state_lock.fullscreen;
             match (current, monitor) {
-                (&None, None) => { return },
                 (&Some(ref a), Some(ref b)) if a.inner != b.inner => {
-                    unimplemented!();
-                }
-                (&Some(_), Some(_)) => { return },
+                    // Our best bet is probably to move to the origin of the
+                    // target monitor.
+                    unimplemented!()
+                },
+                (&None, None) | (&Some(_), Some(_)) => return,
                 _ => (),
             }
+            trace!("Unlocked shared state in `set_fullscreen`");
             current.is_none()
         };
 
-        // Because toggleFullScreen will not work if the StyleMask is none,
-        // We set a normal style to it temporary.
-        // It will clean up at window_did_exit_fullscreen.
-        if not_fullscreen {
-            let curr_mask = unsafe { self.nswindow.styleMask() };
-            let required = NSWindowStyleMask::NSTitledWindowMask
-                | NSWindowStyleMask::NSResizableWindowMask;
-            if !curr_mask.contains(required) {
-                unsafe { util::set_style_mask(
-                    *self.nswindow,
-                    *self.nsview,
-                    required,
-                ) };
-                shared_state_lock.saved_style = Some(curr_mask);
-            }
-        }
-
-        drop(shared_state_lock);
-        trace!("Unlocked shared state in `set_fullscreen`");
-
-        unsafe { self.nswindow.toggleFullScreen_(nil) };
+        unsafe { util::toggle_full_screen_async(
+            *self.nswindow,
+            *self.nsview,
+            not_fullscreen,
+            Arc::downgrade(&self.shared_state),
+        ) };
     }
 
     #[inline]
     pub fn set_decorations(&self, decorations: bool) {
-        trace!("`set_decorations` {:?}", decorations);
         if decorations != self.decorations.load(Ordering::Acquire) {
             self.decorations.store(decorations, Ordering::Release);
 
-            trace!("Locked shared state in `set_decorations`");
-            let shared_state_lock = self.shared_state.lock().unwrap();
+            let (fullscreen, resizable) = {
+                trace!("Locked shared state in `set_decorations`");
+                let shared_state_lock = self.shared_state.lock().unwrap();
+                trace!("Unlocked shared state in `set_decorations`");
+                (
+                    shared_state_lock.fullscreen.is_some(),
+                    shared_state_lock.resizable,
+                )
+            };
 
-            // Don't apply yet if we're in fullscreen mode.
-            // This will be applied in `window_did_exit_fullscreen`.
-            if shared_state_lock.fullscreen.is_some() { return };
+            // If we're in fullscreen mode, we wait to apply decoration changes
+            // until we're in `window_did_exit_fullscreen`.
+            if fullscreen { return }
 
-            unsafe {
+            let new_mask = {
                 let mut new_mask = if decorations {
                     NSWindowStyleMask::NSClosableWindowMask
                         | NSWindowStyleMask::NSMiniaturizableWindowMask
@@ -693,26 +751,23 @@ impl UnownedWindow {
                     NSWindowStyleMask::NSBorderlessWindowMask
                         | NSWindowStyleMask::NSResizableWindowMask
                 };
-                if !shared_state_lock.resizable {
+                if !resizable {
                     new_mask &= !NSWindowStyleMask::NSResizableWindowMask;
                 }
-                util::set_style_mask(*self.nswindow, *self.nsview, new_mask);
-            }
-
-            trace!("Unlocked shared state in `set_decorations`");
+                new_mask
+            };
+            self.set_style_mask_async(new_mask);
         }
     }
 
     #[inline]
     pub fn set_always_on_top(&self, always_on_top: bool) {
-        unsafe {
-            let level = if always_on_top {
-                ffi::NSWindowLevel::NSFloatingWindowLevel
-            } else {
-                ffi::NSWindowLevel::NSNormalWindowLevel
-            };
-            let _: () = msg_send![*self.nswindow, setLevel:level];
-        }
+        let level = if always_on_top {
+            ffi::NSWindowLevel::NSFloatingWindowLevel
+        } else {
+            ffi::NSWindowLevel::NSNormalWindowLevel
+        };
+        unsafe { util::set_level_async(*self.nswindow, level) };
     }
 
     #[inline]
@@ -769,10 +824,9 @@ impl WindowExtMacOS for UnownedWindow {
     #[inline]
     fn request_user_attention(&self, is_critical: bool) {
         unsafe {
-            NSApp().requestUserAttention_(if is_critical {
-                NSRequestUserAttentionType::NSCriticalRequest
-            } else {
-                NSRequestUserAttentionType::NSInformationalRequest
+            NSApp().requestUserAttention_(match is_critical {
+                true => NSRequestUserAttentionType::NSCriticalRequest,
+                false => NSRequestUserAttentionType::NSInformationalRequest,
             });
         }
     }
@@ -781,18 +835,10 @@ impl WindowExtMacOS for UnownedWindow {
 impl Drop for UnownedWindow {
     fn drop(&mut self) {
         trace!("Dropping `UnownedWindow` ({:?})", self as *mut _);
-
-        // nswindow::close uses autorelease
-        // so autorelease pool
-        let pool = unsafe { NSAutoreleasePool::new(nil) };
-
         // Close the window if it has not yet been closed.
-        let nswindow = *self.nswindow;
-        if nswindow != nil {
-            let _: () = unsafe { msg_send![nswindow, close] };
+        if *self.nswindow != nil {
+            unsafe { util::close_async(*self.nswindow) };
         }
-
-        let _: () = unsafe { msg_send![pool, drain] };
     }
 }
 

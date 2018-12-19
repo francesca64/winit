@@ -263,6 +263,7 @@ extern fn view_did_move_to_window(this: &Object, _sel: Sel) {
             assumeInside:NO
         ];
     }
+    trace!("Completed `viewDidMoveToWindow`");
 }
 
 extern fn accepts_first_responder(_this: &Object, _sel: Sel) -> BOOL {
@@ -270,18 +271,20 @@ extern fn accepts_first_responder(_this: &Object, _sel: Sel) -> BOOL {
 }
 
 extern fn has_marked_text(this: &Object, _sel: Sel) -> BOOL {
-    trace!("Triggered `hasMarkedText`");
     unsafe {
+        trace!("Triggered `hasMarkedText`");
         let marked_text: id = *this.get_ivar("markedText");
+        trace!("Completed `hasMarkedText`");
         (marked_text.length() > 0) as i8
     }
 }
 
 extern fn marked_range(this: &Object, _sel: Sel) -> NSRange {
-    trace!("Triggered `markedRange`");
     unsafe {
+        trace!("Triggered `markedRange`");
         let marked_text: id = *this.get_ivar("markedText");
         let length = marked_text.length();
+        trace!("Completed `markedRange`");
         if length > 0 {
             NSRange::new(0, length - 1)
         } else {
@@ -292,6 +295,7 @@ extern fn marked_range(this: &Object, _sel: Sel) -> NSRange {
 
 extern fn selected_range(_this: &Object, _sel: Sel) -> NSRange {
     trace!("Triggered `selectedRange`");
+    trace!("Completed `selectedRange`");
     util::EMPTY_RANGE
 }
 
@@ -315,6 +319,7 @@ extern fn set_marked_text(
         };
         *marked_text_ref = marked_text;
     }
+    trace!("Completed `setMarkedText`");
 }
 
 extern fn unmark_text(this: &Object, _sel: Sel) {
@@ -326,10 +331,12 @@ extern fn unmark_text(this: &Object, _sel: Sel) {
         let input_context: id = msg_send![this, inputContext];
         let _: () = msg_send![input_context, discardMarkedText];
     }
+    trace!("Completed `unmarkText`");
 }
 
 extern fn valid_attributes_for_marked_text(_this: &Object, _sel: Sel) -> id {
     trace!("Triggered `validAttributesForMarkedText`");
+    trace!("Completed `validAttributesForMarkedText`");
     unsafe { msg_send![class!(NSArray), array] }
 }
 
@@ -340,11 +347,13 @@ extern fn attributed_substring_for_proposed_range(
     _actual_range: *mut c_void, // *mut NSRange
 ) -> id {
     trace!("Triggered `attributedSubstringForProposedRange`");
+    trace!("Completed `attributedSubstringForProposedRange`");
     nil
 }
 
 extern fn character_index_for_point(_this: &Object, _sel: Sel, _point: NSPoint) -> NSUInteger {
     trace!("Triggered `characterIndexForPoint`");
+    trace!("Completed `characterIndexForPoint`");
     0
 }
 
@@ -354,8 +363,8 @@ extern fn first_rect_for_character_range(
     _range: NSRange,
     _actual_range: *mut c_void, // *mut NSRange
 ) -> NSRect {
-    trace!("Triggered `firstRectForCharacterRange`");
     unsafe {
+        trace!("Triggered `firstRectForCharacterRange`");
         let state_ptr: *mut c_void = *this.get_ivar("winitState");
         let state = &mut *(state_ptr as *mut ViewState);
         let (x, y) = state.ime_spot.unwrap_or_else(|| {
@@ -367,7 +376,7 @@ extern fn first_rect_for_character_range(
             let y = util::bottom_left_to_top_left(content_rect);
             (x, y)
         });
-
+        trace!("Completed `firstRectForCharacterRange`");
         NSRect::new(
             NSPoint::new(x as _, y as _),
             NSSize::new(0.0, 0.0),
@@ -410,6 +419,7 @@ extern fn insert_text(this: &Object, _sel: Sel, string: id, _replacement_range: 
 
         AppState::queue_events(events);
     }
+    trace!("Completed `insertText`");
 }
 
 extern fn do_command_by_selector(this: &Object, _sel: Sel, command: Sel) {
@@ -443,6 +453,7 @@ extern fn do_command_by_selector(this: &Object, _sel: Sel, command: Sel) {
 
         AppState::queue_events(events);
     }
+    trace!("Completed `doCommandBySelector`");
 }
 
 fn get_characters(event: id) -> Option<String> {
@@ -524,6 +535,7 @@ extern fn key_down(this: &Object, _sel: Sel, event: id) {
             let _: () = msg_send![this, interpretKeyEvents:array];
         }
     }
+    trace!("Completed `keyDown`");
 }
 
 extern fn key_up(this: &Object, _sel: Sel, event: id) {
@@ -559,6 +571,7 @@ extern fn key_up(this: &Object, _sel: Sel, event: id) {
 
         AppState::queue_event(window_event);
     }
+    trace!("Completed `keyUp`");
 }
 
 extern fn flags_changed(this: &Object, _sel: Sel, event: id) {
@@ -612,6 +625,7 @@ extern fn flags_changed(this: &Object, _sel: Sel, event: id) {
             });
         }
     }
+    trace!("Completed `flagsChanged`");
 }
 
 extern fn insert_tab(this: &Object, _sel: Sel, _sender: id) {
@@ -665,6 +679,7 @@ extern fn cancel_operation(this: &Object, _sel: Sel, _sender: id) {
 
         AppState::queue_event(window_event);
     }
+    trace!("Completed `cancelOperation`");
 }
 
 fn mouse_click(this: &Object, event: id, button: MouseButton, button_state: ElementState) {
@@ -795,6 +810,7 @@ extern fn mouse_entered(this: &Object, _sel: Sel, event: id) {
         AppState::queue_event(enter_event);
         AppState::queue_event(move_event);
     }
+    trace!("Completed `mouseEntered`");
 }
 
 extern fn mouse_exited(this: &Object, _sel: Sel, _event: id) {
@@ -810,6 +826,7 @@ extern fn mouse_exited(this: &Object, _sel: Sel, _event: id) {
 
         AppState::queue_event(window_event);
     }
+    trace!("Completed `mouseExited`");
 }
 
 extern fn scroll_wheel(this: &Object, _sel: Sel, event: id) {
@@ -850,6 +867,7 @@ extern fn scroll_wheel(this: &Object, _sel: Sel, event: id) {
         AppState::queue_event(device_event);
         AppState::queue_event(window_event);
     }
+    trace!("Completed `scrollWheel`");
 }
 
 extern fn pressure_change_with_event(this: &Object, _sel: Sel, event: id) {
@@ -872,6 +890,7 @@ extern fn pressure_change_with_event(this: &Object, _sel: Sel, event: id) {
 
         AppState::queue_event(window_event);
     }
+    trace!("Completed `pressureChangeWithEvent`");
 }
 
 // Allows us to receive Ctrl-Tab and Ctrl-Esc.

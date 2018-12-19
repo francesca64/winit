@@ -23,6 +23,9 @@ log = "0.4"
 image = { version = "0.20.1", optional = true }
 serde = { version = "1", optional = true, features = ["serde_derive"] }
 
+[dev-dependencies]
+env_logger = "0.5"
+
 [target.'cfg(target_os = "android")'.dependencies.android_glue]
 version = "0.2"
 

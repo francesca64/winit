@@ -1,5 +1,5 @@
 use std::{
-    collections::VecDeque, marker::PhantomData,
+    collections::VecDeque, marker::PhantomData, process,
 };
 
 use cocoa::{appkit::NSApp, base::{id, nil}, foundation::NSAutoreleasePool};
@@ -78,7 +78,8 @@ impl<T> EventLoop<T> {
             assert_ne!(app, nil);
             AppState::set_callback(callback, self.window_target);
             let _: () = msg_send![app, run];
-            AppState::exit()
+            AppState::exit();
+            process::exit(0)
         }
     }
 

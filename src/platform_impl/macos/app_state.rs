@@ -1,6 +1,7 @@
 use std::{
-    self, collections::VecDeque, fmt::{self, Debug, Formatter},
-    hint::unreachable_unchecked, mem, sync::{Mutex, MutexGuard}, time::Instant,
+    collections::VecDeque, fmt::{self, Debug, Formatter},
+    hint::unreachable_unchecked, mem,
+    sync::{atomic::{AtomicBool, Ordering}, Mutex, MutexGuard}, time::Instant,
 };
 
 use cocoa::{appkit::NSApp, base::nil};
@@ -68,6 +69,7 @@ where
 
 #[derive(Default)]
 struct Handler {
+    ready: AtomicBool,
     control_flow: Mutex<ControlFlow>,
     control_flow_prev: Mutex<ControlFlow>,
     start_time: Mutex<Option<Instant>>,
@@ -86,6 +88,18 @@ impl Handler {
 
     fn waker<'a>(&'a self) -> MutexGuard<'a, EventLoopWaker> {
         self.waker.lock().unwrap()
+    }
+
+    fn is_ready(&self) -> bool {
+        self.ready.load(Ordering::Acquire)
+    }
+
+    fn set_ready(&self) {
+        self.ready.store(true, Ordering::Release);
+    }
+
+    fn is_control_flow_exit(&self) -> bool {
+        *self.control_flow.lock().unwrap() == ControlFlow::Exit
     }
 
     fn get_control_flow_and_update_prev(&self) -> ControlFlow {
@@ -136,17 +150,18 @@ impl AppState {
         }));
     }
 
-    pub fn exit() -> ! {
+    pub fn exit() {
         HANDLER.handle_nonuser_event(Event::LoopDestroyed);
-        std::process::exit(0)
     }
 
     pub fn launched() {
+        HANDLER.set_ready();
         HANDLER.waker().start();
         HANDLER.handle_nonuser_event(Event::NewEvents(StartCause::Init));
     }
 
     pub fn wakeup() {
+        if !HANDLER.is_ready() { return }
         let start = HANDLER.get_start_time().unwrap();
         let cause = match HANDLER.get_control_flow_and_update_prev() {
             ControlFlow::Poll => StartCause::Poll,
@@ -173,29 +188,39 @@ impl AppState {
     }
 
     pub fn queue_event(event: Event<Never>) {
+        if !unsafe { msg_send![class!(NSThread), isMainThread] } {
+            panic!("uh-oh");
+        }
         HANDLER.events().push_back(event);
     }
 
     pub fn queue_events(mut events: VecDeque<Event<Never>>) {
+        if !unsafe { msg_send![class!(NSThread), isMainThread] } {
+            panic!("uh-ohs");
+        }
         HANDLER.events().append(&mut events);
     }
 
     pub fn cleared() {
-        HANDLER.handle_nonuser_event(Event::EventsCleared);
+        if !HANDLER.is_ready() { return }
+        let mut will_stop = HANDLER.is_control_flow_exit();
         for event in HANDLER.take_events() {
             HANDLER.handle_nonuser_event(event);
+            will_stop |= HANDLER.is_control_flow_exit();
+        }
+        HANDLER.handle_nonuser_event(Event::EventsCleared);
+        will_stop |= HANDLER.is_control_flow_exit();
+        if will_stop {
+            let _: () = unsafe { msg_send![NSApp(), stop:nil] };
+            return
         }
         HANDLER.update_start_time();
         match HANDLER.get_old_and_new_control_flow() {
-            (ControlFlow::Poll, ControlFlow::Poll) => (),
-            (ControlFlow::Wait, ControlFlow::Wait) => (),
-            (ControlFlow::WaitUntil(old_instant), ControlFlow::WaitUntil(new_instant)) if old_instant == new_instant => (),
+            (ControlFlow::Exit, _) | (_, ControlFlow::Exit) => unreachable!(),
+            (old, new) if old == new => (),
             (_, ControlFlow::Wait) => HANDLER.waker().stop(),
-            (_, ControlFlow::WaitUntil(new_instant)) => HANDLER.waker().start_at(new_instant),
+            (_, ControlFlow::WaitUntil(instant)) => HANDLER.waker().start_at(instant),
             (_, ControlFlow::Poll) => HANDLER.waker().start(),
-            (_, ControlFlow::Exit) => {
-                let _: () = unsafe { msg_send![NSApp(), stop:nil] };
-            },
         }
     }
 }

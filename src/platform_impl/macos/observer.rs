@@ -251,8 +251,8 @@ impl EventLoopWaker {
             unsafe {
                 let current = CFAbsoluteTimeGetCurrent();
                 let duration = instant - now;
-                let fsecs =
-                    duration.subsec_nanos() as f64 / 1_000_000_000.0 + duration.as_secs() as f64;
+                let fsecs = duration.subsec_nanos() as f64 / 1_000_000_000.0
+                    + duration.as_secs() as f64;
                 CFRunLoopTimerSetNextFireDate(self.timer, current + fsecs)
             }
         }

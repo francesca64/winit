@@ -3,6 +3,7 @@
 mod app;
 mod app_delegate;
 mod app_state;
+mod dispatch;
 mod event;
 mod event_loop;
 mod ffi;
@@ -38,6 +39,9 @@ pub struct Window {
     // We keep this around so that it doesn't get dropped until the window does.
     _delegate: WindowDelegate,
 }
+
+unsafe impl Send for Window {}
+unsafe impl Sync for Window {}
 
 impl Deref for Window {
     type Target = UnownedWindow;
