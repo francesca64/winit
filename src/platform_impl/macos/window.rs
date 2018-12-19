@@ -477,86 +477,9 @@ impl UnownedWindow {
     }
 
     pub fn set_cursor(&self, cursor: MouseCursor) {
-        enum CursorType {
-            Native(&'static str),
-            Undocumented(&'static str),
-            WebKit(&'static str),
-        }
-
-        let cursor_name = match cursor {
-            MouseCursor::Arrow | MouseCursor::Default => CursorType::Native("arrowCursor"),
-            MouseCursor::Hand => CursorType::Native("pointingHandCursor"),
-            MouseCursor::Grabbing | MouseCursor::Grab => CursorType::Native("closedHandCursor"),
-            MouseCursor::Text => CursorType::Native("IBeamCursor"),
-            MouseCursor::VerticalText => CursorType::Native("IBeamCursorForVerticalLayout"),
-            MouseCursor::Copy => CursorType::Native("dragCopyCursor"),
-            MouseCursor::Alias => CursorType::Native("dragLinkCursor"),
-            MouseCursor::NotAllowed | MouseCursor::NoDrop => CursorType::Native("operationNotAllowedCursor"),
-            MouseCursor::ContextMenu => CursorType::Native("contextualMenuCursor"),
-            MouseCursor::Crosshair => CursorType::Native("crosshairCursor"),
-            MouseCursor::EResize => CursorType::Native("resizeRightCursor"),
-            MouseCursor::NResize => CursorType::Native("resizeUpCursor"),
-            MouseCursor::WResize => CursorType::Native("resizeLeftCursor"),
-            MouseCursor::SResize => CursorType::Native("resizeDownCursor"),
-            MouseCursor::EwResize | MouseCursor::ColResize => CursorType::Native("resizeLeftRightCursor"),
-            MouseCursor::NsResize | MouseCursor::RowResize => CursorType::Native("resizeUpDownCursor"),
-
-            // Undocumented cursors: https://stackoverflow.com/a/46635398/5435443
-            MouseCursor::Help => CursorType::Undocumented("_helpCursor"),
-            MouseCursor::ZoomIn => CursorType::Undocumented("_zoomInCursor"),
-            MouseCursor::ZoomOut => CursorType::Undocumented("_zoomOutCursor"),
-            MouseCursor::NeResize => CursorType::Undocumented("_windowResizeNorthEastCursor"),
-            MouseCursor::NwResize => CursorType::Undocumented("_windowResizeNorthWestCursor"),
-            MouseCursor::SeResize => CursorType::Undocumented("_windowResizeSouthEastCursor"),
-            MouseCursor::SwResize => CursorType::Undocumented("_windowResizeSouthWestCursor"),
-            MouseCursor::NeswResize => CursorType::Undocumented("_windowResizeNorthEastSouthWestCursor"),
-            MouseCursor::NwseResize => CursorType::Undocumented("_windowResizeNorthWestSouthEastCursor"),
-
-            // While these are available, the former just loads a white arrow,
-            // and the latter loads an ugly deflated beachball!
-            // MouseCursor::Move => CursorType::Undocumented("_moveCursor"),
-            // MouseCursor::Wait => CursorType::Undocumented("_waitCursor"),
-
-            // An even more undocumented cursor...
-            // https://bugs.eclipse.org/bugs/show_bug.cgi?id=522349
-            // This is the wrong semantics for `Wait`, but it's the same as
-            // what's used in Safari and Chrome.
-            MouseCursor::Wait | MouseCursor::Progress => CursorType::Undocumented("busyButClickableCursor"),
-
-            // For the rest, we can just snatch the cursors from WebKit...
-            // They fit the style of the native cursors, and will seem
-            // completely standard to macOS users.
-            // https://stackoverflow.com/a/21786835/5435443
-            MouseCursor::Move | MouseCursor::AllScroll => CursorType::WebKit("move"),
-            MouseCursor::Cell => CursorType::WebKit("cell"),
-        };
-
-        let class = class!(NSCursor);
-        match cursor_name {
-            CursorType::Native(cursor_name) => {
-                let sel = Sel::register(cursor_name);
-                unsafe {
-                    let cursor: id = msg_send![class, performSelector:sel];
-                    let _: () = msg_send![cursor, set];
-                }
-            },
-            CursorType::Undocumented(cursor_name) => {
-                let sel = Sel::register(cursor_name);
-                unsafe {
-                    let sel = if msg_send![class, respondsToSelector:sel] {
-                        sel
-                    } else {
-                        warn!("Cursor `{}` appears to be invalid", cursor_name);
-                        sel!(arrowCursor)
-                    };
-                    let cursor: id = msg_send![class, performSelector:sel];
-                    let _: () = msg_send![cursor, set];
-                }
-            },
-            CursorType::WebKit(cursor_name) => unsafe {
-                let cursor = util::load_webkit_cursor(cursor_name);
-                let _: () = msg_send![cursor, set];
-            },
+        unsafe {
+            let cursor = util::CursorType::from(cursor).load();
+            let _: () = msg_send![cursor, set];
         }
     }
 

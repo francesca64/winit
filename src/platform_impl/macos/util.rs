@@ -12,7 +12,7 @@ use core_graphics::display::CGDisplay;
 use objc::runtime::{BOOL, Class, Object, Sel, YES};
 
 pub use util::*;
-use dpi::LogicalSize;
+use {dpi::LogicalSize, window::MouseCursor};
 use platform_impl::platform::{dispatch::*, ffi, window::SharedState};
 
 pub const EMPTY_RANGE: ffi::NSRange = ffi::NSRange {
@@ -400,6 +400,87 @@ pub unsafe fn create_input_context(view: id) -> IdRef {
     let input_context: id = msg_send![class!(NSTextInputContext), alloc];
     let input_context: id = msg_send![input_context, initWithClient:view];
     IdRef::new(input_context)
+}
+
+pub enum CursorType {
+    Native(&'static str),
+    Undocumented(&'static str),
+    WebKit(&'static str),
+}
+
+impl From<MouseCursor> for CursorType {
+    fn from(cursor: MouseCursor) -> Self {
+        match cursor {
+            MouseCursor::Arrow | MouseCursor::Default => CursorType::Native("arrowCursor"),
+            MouseCursor::Hand => CursorType::Native("pointingHandCursor"),
+            MouseCursor::Grabbing | MouseCursor::Grab => CursorType::Native("closedHandCursor"),
+            MouseCursor::Text => CursorType::Native("IBeamCursor"),
+            MouseCursor::VerticalText => CursorType::Native("IBeamCursorForVerticalLayout"),
+            MouseCursor::Copy => CursorType::Native("dragCopyCursor"),
+            MouseCursor::Alias => CursorType::Native("dragLinkCursor"),
+            MouseCursor::NotAllowed | MouseCursor::NoDrop => CursorType::Native("operationNotAllowedCursor"),
+            MouseCursor::ContextMenu => CursorType::Native("contextualMenuCursor"),
+            MouseCursor::Crosshair => CursorType::Native("crosshairCursor"),
+            MouseCursor::EResize => CursorType::Native("resizeRightCursor"),
+            MouseCursor::NResize => CursorType::Native("resizeUpCursor"),
+            MouseCursor::WResize => CursorType::Native("resizeLeftCursor"),
+            MouseCursor::SResize => CursorType::Native("resizeDownCursor"),
+            MouseCursor::EwResize | MouseCursor::ColResize => CursorType::Native("resizeLeftRightCursor"),
+            MouseCursor::NsResize | MouseCursor::RowResize => CursorType::Native("resizeUpDownCursor"),
+
+            // Undocumented cursors: https://stackoverflow.com/a/46635398/5435443
+            MouseCursor::Help => CursorType::Undocumented("_helpCursor"),
+            MouseCursor::ZoomIn => CursorType::Undocumented("_zoomInCursor"),
+            MouseCursor::ZoomOut => CursorType::Undocumented("_zoomOutCursor"),
+            MouseCursor::NeResize => CursorType::Undocumented("_windowResizeNorthEastCursor"),
+            MouseCursor::NwResize => CursorType::Undocumented("_windowResizeNorthWestCursor"),
+            MouseCursor::SeResize => CursorType::Undocumented("_windowResizeSouthEastCursor"),
+            MouseCursor::SwResize => CursorType::Undocumented("_windowResizeSouthWestCursor"),
+            MouseCursor::NeswResize => CursorType::Undocumented("_windowResizeNorthEastSouthWestCursor"),
+            MouseCursor::NwseResize => CursorType::Undocumented("_windowResizeNorthWestSouthEastCursor"),
+
+            // While these are available, the former just loads a white arrow,
+            // and the latter loads an ugly deflated beachball!
+            // MouseCursor::Move => CursorType::Undocumented("_moveCursor"),
+            // MouseCursor::Wait => CursorType::Undocumented("_waitCursor"),
+
+            // An even more undocumented cursor...
+            // https://bugs.eclipse.org/bugs/show_bug.cgi?id=522349
+            // This is the wrong semantics for `Wait`, but it's the same as
+            // what's used in Safari and Chrome.
+            MouseCursor::Wait | MouseCursor::Progress => CursorType::Undocumented("busyButClickableCursor"),
+
+            // For the rest, we can just snatch the cursors from WebKit...
+            // They fit the style of the native cursors, and will seem
+            // completely standard to macOS users.
+            // https://stackoverflow.com/a/21786835/5435443
+            MouseCursor::Move | MouseCursor::AllScroll => CursorType::WebKit("move"),
+            MouseCursor::Cell => CursorType::WebKit("cell"),
+        }
+    }
+}
+
+impl CursorType {
+    pub unsafe fn load(self) -> id {
+        match self {
+            CursorType::Native(cursor_name) => {
+                let sel = Sel::register(cursor_name);
+                msg_send![class!(NSCursor), performSelector:sel]
+            },
+            CursorType::Undocumented(cursor_name) => {
+                let class = class!(NSCursor);
+                let sel = Sel::register(cursor_name);
+                let sel = if msg_send![class, respondsToSelector:sel] {
+                    sel
+                } else {
+                    warn!("Cursor `{}` appears to be invalid", cursor_name);
+                    sel!(arrowCursor)
+                };
+                msg_send![class, performSelector:sel]
+            },
+            CursorType::WebKit(cursor_name) => load_webkit_cursor(cursor_name),
+        }
+    }
 }
 
 // Note that loading `busybutclickable` with this code won't animate the frames;
