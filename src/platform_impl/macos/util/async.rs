@@ -1,80 +1,14 @@
-use std::{ops::Deref, os::raw::c_void, sync::{Mutex, Weak}};
+use std::{os::raw::c_void, sync::{Mutex, Weak}};
 
 use cocoa::{
-    appkit::{CGFloat, NSApp, NSImage, NSWindow, NSWindowStyleMask},
+    appkit::{CGFloat, NSWindow, NSWindowStyleMask},
     base::{id, nil},
-    foundation::{
-        NSAutoreleasePool, NSDictionary, NSPoint, NSRect, NSSize, NSString,
-        NSUInteger,
-    },
+    foundation::{NSAutoreleasePool, NSPoint, NSSize},
 };
-use core_graphics::display::CGDisplay;
 use dispatch::ffi::{dispatch_async_f, dispatch_get_main_queue, dispatch_sync_f};
-use objc::runtime::{BOOL, Class, Object, Sel, YES};
 
-pub use util::*;
-use {dpi::LogicalSize, window::MouseCursor};
+use dpi::LogicalSize;
 use platform_impl::platform::{ffi, window::SharedState};
-
-pub const EMPTY_RANGE: ffi::NSRange = ffi::NSRange {
-    location: ffi::NSNotFound as NSUInteger,
-    length: 0,
-};
-
-pub struct IdRef(id);
-
-impl IdRef {
-    pub fn new(i: id) -> IdRef {
-        IdRef(i)
-    }
-
-    #[allow(dead_code)]
-    pub fn retain(i: id) -> IdRef {
-        if i != nil {
-            let _: id = unsafe { msg_send![i, retain] };
-        }
-        IdRef(i)
-    }
-
-    pub fn non_nil(self) -> Option<IdRef> {
-        if self.0 == nil { None } else { Some(self) }
-    }
-}
-
-impl Drop for IdRef {
-    fn drop(&mut self) {
-        if self.0 != nil {
-            unsafe {
-                let autoreleasepool = NSAutoreleasePool::new(nil);
-                let _ : () = msg_send![self.0, release];
-                let _ : () = msg_send![autoreleasepool, release];
-            };
-        }
-    }
-}
-
-impl Deref for IdRef {
-    type Target = id;
-    fn deref<'a>(&'a self) -> &'a id {
-        &self.0
-    }
-}
-
-impl Clone for IdRef {
-    fn clone(&self) -> IdRef {
-        if self.0 != nil {
-            let _: id = unsafe { msg_send![self.0, retain] };
-        }
-        IdRef(self.0)
-    }
-}
-
-// For consistency with other platforms, this will...
-// 1. translate the bottom-left window corner into the top-left window corner
-// 2. translate the coordinate from a bottom-left origin coordinate system to a top-left one
-pub fn bottom_left_to_top_left(rect: NSRect) -> f64 {
-    CGDisplay::main().pixels_high() as f64 - (rect.origin.y + rect.size.height)
-}
 
 unsafe fn set_style_mask(nswindow: id, nsview: id, mask: NSWindowStyleMask) {
     nswindow.setStyleMask_(mask);
@@ -350,7 +284,7 @@ extern fn make_key_and_order_front_callback(context: *mut c_void) {
         Box::from_raw(context_ptr);
     }
 }
-// `makeKeyAndOrderFront::` isn't thread-safe. Calling it from another thread
+// `makeKeyAndOrderFront:` isn't thread-safe. Calling it from another thread
 // actually works, but with an odd delay.
 pub unsafe fn make_key_and_order_front_async(nswindow: id) {
     let context = MakeKeyAndOrderFrontData::new_ptr(nswindow);
@@ -381,8 +315,8 @@ extern fn close_callback(context: *mut c_void) {
         Box::from_raw(context_ptr);
     }
 }
-// `makeKeyAndOrderFront::` isn't thread-safe. Calling it from another thread
-// actually works, but with an odd delay.
+// `close:` is thread-safe, but we want the event to be triggered from the main
+// thread. Though, it's a good idea to look into that more...
 pub unsafe fn close_async(nswindow: id) {
     let context = CloseData::new_ptr(nswindow);
     dispatch_async_f(
@@ -390,150 +324,4 @@ pub unsafe fn close_async(nswindow: id) {
         context as *mut _,
         close_callback,
     );
-}
-
-pub unsafe fn superclass<'a>(this: &'a Object) -> &'a Class {
-    let superclass: id = msg_send![this, superclass];
-    &*(superclass as *const _)
-}
-
-pub unsafe fn create_input_context(view: id) -> IdRef {
-    let input_context: id = msg_send![class!(NSTextInputContext), alloc];
-    let input_context: id = msg_send![input_context, initWithClient:view];
-    IdRef::new(input_context)
-}
-
-pub enum Cursor {
-    Native(&'static str),
-    Undocumented(&'static str),
-    WebKit(&'static str),
-}
-
-impl From<MouseCursor> for Cursor {
-    fn from(cursor: MouseCursor) -> Self {
-        match cursor {
-            MouseCursor::Arrow | MouseCursor::Default => Cursor::Native("arrowCursor"),
-            MouseCursor::Hand => Cursor::Native("pointingHandCursor"),
-            MouseCursor::Grabbing | MouseCursor::Grab => Cursor::Native("closedHandCursor"),
-            MouseCursor::Text => Cursor::Native("IBeamCursor"),
-            MouseCursor::VerticalText => Cursor::Native("IBeamCursorForVerticalLayout"),
-            MouseCursor::Copy => Cursor::Native("dragCopyCursor"),
-            MouseCursor::Alias => Cursor::Native("dragLinkCursor"),
-            MouseCursor::NotAllowed | MouseCursor::NoDrop => Cursor::Native("operationNotAllowedCursor"),
-            MouseCursor::ContextMenu => Cursor::Native("contextualMenuCursor"),
-            MouseCursor::Crosshair => Cursor::Native("crosshairCursor"),
-            MouseCursor::EResize => Cursor::Native("resizeRightCursor"),
-            MouseCursor::NResize => Cursor::Native("resizeUpCursor"),
-            MouseCursor::WResize => Cursor::Native("resizeLeftCursor"),
-            MouseCursor::SResize => Cursor::Native("resizeDownCursor"),
-            MouseCursor::EwResize | MouseCursor::ColResize => Cursor::Native("resizeLeftRightCursor"),
-            MouseCursor::NsResize | MouseCursor::RowResize => Cursor::Native("resizeUpDownCursor"),
-
-            // Undocumented cursors: https://stackoverflow.com/a/46635398/5435443
-            MouseCursor::Help => Cursor::Undocumented("_helpCursor"),
-            MouseCursor::ZoomIn => Cursor::Undocumented("_zoomInCursor"),
-            MouseCursor::ZoomOut => Cursor::Undocumented("_zoomOutCursor"),
-            MouseCursor::NeResize => Cursor::Undocumented("_windowResizeNorthEastCursor"),
-            MouseCursor::NwResize => Cursor::Undocumented("_windowResizeNorthWestCursor"),
-            MouseCursor::SeResize => Cursor::Undocumented("_windowResizeSouthEastCursor"),
-            MouseCursor::SwResize => Cursor::Undocumented("_windowResizeSouthWestCursor"),
-            MouseCursor::NeswResize => Cursor::Undocumented("_windowResizeNorthEastSouthWestCursor"),
-            MouseCursor::NwseResize => Cursor::Undocumented("_windowResizeNorthWestSouthEastCursor"),
-
-            // While these are available, the former just loads a white arrow,
-            // and the latter loads an ugly deflated beachball!
-            // MouseCursor::Move => Cursor::Undocumented("_moveCursor"),
-            // MouseCursor::Wait => Cursor::Undocumented("_waitCursor"),
-
-            // An even more undocumented cursor...
-            // https://bugs.eclipse.org/bugs/show_bug.cgi?id=522349
-            // This is the wrong semantics for `Wait`, but it's the same as
-            // what's used in Safari and Chrome.
-            MouseCursor::Wait | MouseCursor::Progress => Cursor::Undocumented("busyButClickableCursor"),
-
-            // For the rest, we can just snatch the cursors from WebKit...
-            // They fit the style of the native cursors, and will seem
-            // completely standard to macOS users.
-            // https://stackoverflow.com/a/21786835/5435443
-            MouseCursor::Move | MouseCursor::AllScroll => Cursor::WebKit("move"),
-            MouseCursor::Cell => Cursor::WebKit("cell"),
-        }
-    }
-}
-
-impl Default for Cursor {
-    fn default() -> Self {
-        Cursor::Native("arrowCursor")
-    }
-}
-
-impl Cursor {
-    pub unsafe fn load(&self) -> id {
-        match self {
-            Cursor::Native(cursor_name) => {
-                let sel = Sel::register(cursor_name);
-                msg_send![class!(NSCursor), performSelector:sel]
-            },
-            Cursor::Undocumented(cursor_name) => {
-                let class = class!(NSCursor);
-                let sel = Sel::register(cursor_name);
-                let sel = if msg_send![class, respondsToSelector:sel] {
-                    sel
-                } else {
-                    warn!("Cursor `{}` appears to be invalid", cursor_name);
-                    sel!(arrowCursor)
-                };
-                msg_send![class, performSelector:sel]
-            },
-            Cursor::WebKit(cursor_name) => load_webkit_cursor(cursor_name),
-        }
-    }
-}
-
-// Note that loading `busybutclickable` with this code won't animate the frames;
-// instead you'll just get them all in a column.
-pub unsafe fn load_webkit_cursor(cursor_name: &str) -> id {
-    static CURSOR_ROOT: &'static str = "/System/Library/Frameworks/ApplicationServices.framework/Versions/A/Frameworks/HIServices.framework/Versions/A/Resources/cursors";
-    let cursor_root = NSString::alloc(nil).init_str(CURSOR_ROOT);
-    let cursor_name = NSString::alloc(nil).init_str(cursor_name);
-    let cursor_pdf = NSString::alloc(nil).init_str("cursor.pdf");
-    let cursor_plist = NSString::alloc(nil).init_str("info.plist");
-    let key_x = NSString::alloc(nil).init_str("hotx");
-    let key_y = NSString::alloc(nil).init_str("hoty");
-
-    let cursor_path: id = msg_send![cursor_root,
-        stringByAppendingPathComponent:cursor_name
-    ];
-    let pdf_path: id = msg_send![cursor_path,
-        stringByAppendingPathComponent:cursor_pdf
-    ];
-    let info_path: id = msg_send![cursor_path,
-        stringByAppendingPathComponent:cursor_plist
-    ];
-
-    let image = NSImage::alloc(nil).initByReferencingFile_(pdf_path);
-    let info = NSDictionary::dictionaryWithContentsOfFile_(
-        nil,
-        info_path,
-    );
-    let x = info.valueForKey_(key_x);
-    let y = info.valueForKey_(key_y);
-    let point = NSPoint::new(
-        msg_send![x, doubleValue],
-        msg_send![y, doubleValue],
-    );
-    let cursor: id = msg_send![class!(NSCursor), alloc];
-    msg_send![cursor,
-        initWithImage:image
-        hotSpot:point
-    ]
-}
-
-#[allow(dead_code)]
-pub unsafe fn open_emoji_picker() {
-    let _: () = msg_send![NSApp(), orderFrontCharacterPalette:nil];
-}
-
-pub extern fn yes(_: &Object, _: Sel) -> BOOL {
-    YES
 }
