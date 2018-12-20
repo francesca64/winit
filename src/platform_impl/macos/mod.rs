@@ -3,7 +3,6 @@
 mod app;
 mod app_delegate;
 mod app_state;
-mod dispatch;
 mod event;
 mod event_loop;
 mod ffi;

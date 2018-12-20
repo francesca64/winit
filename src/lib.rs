@@ -89,15 +89,19 @@ extern crate serde;
 
 #[cfg(target_os = "windows")]
 extern crate winapi;
-#[cfg(any(target_os = "macos", target_os = "ios"))]
-#[macro_use]
-extern crate objc;
+
 #[cfg(target_os = "macos")]
 extern crate cocoa;
 #[cfg(target_os = "macos")]
 extern crate core_foundation;
 #[cfg(target_os = "macos")]
 extern crate core_graphics;
+#[cfg(target_os = "macos")]
+extern crate dispatch;
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+#[macro_use]
+extern crate objc;
+
 #[cfg(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "netbsd", target_os = "openbsd"))]
 extern crate x11_dl;
 #[cfg(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "netbsd", target_os = "openbsd", target_os = "windows"))]

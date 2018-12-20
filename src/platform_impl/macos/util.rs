@@ -9,11 +9,12 @@ use cocoa::{
     },
 };
 use core_graphics::display::CGDisplay;
+use dispatch::ffi::{dispatch_async_f, dispatch_get_main_queue, dispatch_sync_f};
 use objc::runtime::{BOOL, Class, Object, Sel, YES};
 
 pub use util::*;
 use {dpi::LogicalSize, window::MouseCursor};
-use platform_impl::platform::{dispatch::*, ffi, window::SharedState};
+use platform_impl::platform::{ffi, window::SharedState};
 
 pub const EMPTY_RANGE: ffi::NSRange = ffi::NSRange {
     location: ffi::NSNotFound as NSUInteger,
@@ -115,7 +116,7 @@ pub unsafe fn set_style_mask_async(nswindow: id, nsview: id, mask: NSWindowStyle
     dispatch_async_f(
         dispatch_get_main_queue(),
         context as *mut _,
-        Some(set_style_mask_callback),
+        set_style_mask_callback,
     );
 }
 pub unsafe fn set_style_mask_sync(nswindow: id, nsview: id, mask: NSWindowStyleMask) {
@@ -123,7 +124,7 @@ pub unsafe fn set_style_mask_sync(nswindow: id, nsview: id, mask: NSWindowStyleM
     dispatch_sync_f(
         dispatch_get_main_queue(),
         context as *mut _,
-        Some(set_style_mask_callback),
+        set_style_mask_callback,
     );
 }
 
@@ -162,7 +163,7 @@ pub unsafe fn set_content_size_async(nswindow: id, size: LogicalSize) {
     dispatch_async_f(
         dispatch_get_main_queue(),
         context as *mut _,
-        Some(set_content_size_callback),
+        set_content_size_callback,
     );
 }
 
@@ -195,7 +196,7 @@ pub unsafe fn set_frame_top_left_point_async(nswindow: id, point: NSPoint) {
     dispatch_async_f(
         dispatch_get_main_queue(),
         context as *mut _,
-        Some(set_frame_top_left_point_callback),
+        set_frame_top_left_point_callback,
     );
 }
 
@@ -227,7 +228,7 @@ pub unsafe fn set_level_async(nswindow: id, level: ffi::NSWindowLevel) {
     dispatch_async_f(
         dispatch_get_main_queue(),
         context as *mut _,
-        Some(set_level_callback),
+        set_level_callback,
     );
 }
 
@@ -298,7 +299,7 @@ pub unsafe fn toggle_full_screen_async(
     dispatch_async_f(
         dispatch_get_main_queue(),
         context as *mut _,
-        Some(toggle_full_screen_callback),
+        toggle_full_screen_callback,
     );
 }
 
@@ -327,7 +328,7 @@ pub unsafe fn order_out_async(nswindow: id) {
     dispatch_async_f(
         dispatch_get_main_queue(),
         context as *mut _,
-        Some(order_out_callback),
+        order_out_callback,
     );
 }
 
@@ -356,7 +357,7 @@ pub unsafe fn make_key_and_order_front_async(nswindow: id) {
     dispatch_async_f(
         dispatch_get_main_queue(),
         context as *mut _,
-        Some(make_key_and_order_front_callback),
+        make_key_and_order_front_callback,
     );
 }
 
@@ -387,7 +388,7 @@ pub unsafe fn close_async(nswindow: id) {
     dispatch_async_f(
         dispatch_get_main_queue(),
         context as *mut _,
-        Some(close_callback),
+        close_callback,
     );
 }
 
