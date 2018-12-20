@@ -66,6 +66,7 @@ fn main() {
                                 position.y += 10.0 * sign;
                                 position
                             }),
+                            Q => window.request_redraw(),
                             R => window.set_resizable(state),
                             S => window.set_inner_size(match state {
                                 true => (WINDOW_SIZE.0 + 100, WINDOW_SIZE.1 + 100),

@@ -18,13 +18,14 @@ use objc::{runtime::{Class, Object, Sel, BOOL, YES, NO}, declare::ClassDecl};
 use {
     dpi::{LogicalPosition, LogicalSize}, icon::Icon,
     monitor::MonitorHandle as RootMonitorHandle,
-    window::{CreationError, MouseCursor, WindowAttributes},
+    window::{
+        CreationError, MouseCursor, WindowAttributes, WindowId as RootWindowId,
+    },
 };
 use platform::macos::{ActivationPolicy, WindowExtMacOS};
 use platform_impl::platform::{
-    {ffi, util::{self, IdRef}},
-    monitor::{self, MonitorHandle},
-    view::{self, new_view},
+    app_state::AppState, ffi, monitor::{self, MonitorHandle},
+    util::{self, IdRef}, view::{self, new_view},
     window_delegate::{WindowDelegate, WindowDelegateState},
 };
 
@@ -377,7 +378,6 @@ impl UnownedWindow {
 
     #[inline]
     pub fn show(&self) {
-        //unsafe { NSWindow::makeKeyAndOrderFront_(*self.nswindow, nil); }
         unsafe { util::make_key_and_order_front_async(*self.nswindow) };
     }
 
@@ -387,7 +387,7 @@ impl UnownedWindow {
     }
 
     pub fn request_redraw(&self) {
-        unimplemented!();
+        AppState::queue_redraw(RootWindowId(self.id()));
     }
 
     pub fn get_position(&self) -> Option<LogicalPosition> {

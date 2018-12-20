@@ -92,6 +92,10 @@ lazy_static! {
             view_did_move_to_window as extern fn(&Object, Sel),
         );
         decl.add_method(
+            sel!(drawRect:),
+            draw_rect as extern fn(&Object, Sel, id),
+        );
+        decl.add_method(
             sel!(acceptsFirstResponder),
             accepts_first_responder as extern fn(&Object, Sel) -> BOOL,
         );
@@ -274,6 +278,18 @@ extern fn view_did_move_to_window(this: &Object, _sel: Sel) {
         ];
     }
     trace!("Completed `viewDidMoveToWindow`");
+}
+
+extern fn draw_rect(this: &Object, _sel: Sel, rect: id) {
+    unsafe {
+        let state_ptr: *mut c_void = *this.get_ivar("winitState");
+        let state = &mut *(state_ptr as *mut ViewState);
+
+        AppState::queue_redraw(WindowId(get_window_id(state.nswindow)));
+
+        let superclass = util::superclass(this);
+        let () = msg_send![super(this, superclass), drawRect:rect];
+    }
 }
 
 extern fn accepts_first_responder(_this: &Object, _sel: Sel) -> BOOL {

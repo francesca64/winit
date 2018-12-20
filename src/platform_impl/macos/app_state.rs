@@ -7,8 +7,9 @@ use std::{
 use cocoa::{appkit::NSApp, base::nil};
 
 use {
-    event::{Event, StartCause},
+    event::{Event, StartCause, WindowEvent},
     event_loop::{ControlFlow, EventLoopWindowTarget as RootWindowTarget},
+    window::WindowId,
 };
 use platform_impl::platform::{observer::EventLoopWaker, util::Never};
 
@@ -86,6 +87,7 @@ struct Handler {
     start_time: Mutex<Option<Instant>>,
     callback: Mutex<Option<Box<dyn EventHandler>>>,
     pending_events: Mutex<VecDeque<Event<Never>>>,
+    pending_redraw: Mutex<Vec<WindowId>>,
     waker: Mutex<EventLoopWaker>,
 }
 
@@ -95,6 +97,10 @@ unsafe impl Sync for Handler {}
 impl Handler {
     fn events<'a>(&'a self) -> MutexGuard<'a, VecDeque<Event<Never>>> {
         self.pending_events.lock().unwrap()
+    }
+
+    fn redraw<'a>(&'a self) -> MutexGuard<'a, Vec<WindowId>> {
+        self.pending_redraw.lock().unwrap()
     }
 
     fn waker<'a>(&'a self) -> MutexGuard<'a, EventLoopWaker> {
@@ -135,6 +141,10 @@ impl Handler {
 
     fn take_events(&self) -> VecDeque<Event<Never>> {
         mem::replace(&mut *self.events(), Default::default())
+    }
+
+    fn should_redraw(&self) -> Vec<WindowId> {
+        mem::replace(&mut *self.redraw(), Default::default())
     }
 
     fn handle_nonuser_event(&self, event: Event<Never>) {
@@ -207,6 +217,14 @@ impl AppState {
         HANDLER.handle_nonuser_event(Event::NewEvents(cause));
     }
 
+    // This is called from multiple threads at present
+    pub fn queue_redraw(window_id: WindowId) {
+        let mut pending_redraw = HANDLER.redraw();
+        if !pending_redraw.contains(&window_id) {
+            pending_redraw.push(window_id);
+        }
+    }
+
     pub fn queue_event(event: Event<Never>) {
         if !unsafe { msg_send![class!(NSThread), isMainThread] } {
             panic!("uh-oh");
@@ -226,6 +244,12 @@ impl AppState {
         HANDLER.handle_user_events();
         for event in HANDLER.take_events() {
             HANDLER.handle_nonuser_event(event);
+        }
+        for window_id in HANDLER.should_redraw() {
+            HANDLER.handle_nonuser_event(Event::WindowEvent {
+                window_id,
+                event: WindowEvent::RedrawRequested,
+            });
         }
         HANDLER.handle_nonuser_event(Event::EventsCleared);
         if HANDLER.should_exit() {
