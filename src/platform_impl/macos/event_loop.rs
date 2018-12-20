@@ -1,5 +1,5 @@
 use std::{
-    collections::VecDeque, marker::PhantomData, process,
+    collections::VecDeque, mem, os::raw::c_void, process, ptr, sync::mpsc,
 };
 
 use cocoa::{appkit::NSApp, base::{id, nil}, foundation::NSAutoreleasePool};
@@ -11,16 +11,18 @@ use {
 use platform_impl::platform::{
     app::APP_CLASS, app_delegate::APP_DELEGATE_CLASS,
     app_state::AppState, monitor::{self, MonitorHandle},
-    observer::setup_control_flow_observers, util::IdRef,
+    observer::*, util::IdRef,
 };
 
 pub struct EventLoopWindowTarget<T: 'static> {
-    _marker: PhantomData<T>,
+    pub sender: mpsc::Sender<T>, // this is only here to be cloned elsewhere
+    pub receiver: mpsc::Receiver<T>,
 }
 
 impl<T> Default for EventLoopWindowTarget<T> {
     fn default() -> Self {
-        EventLoopWindowTarget { _marker: PhantomData }
+        let (sender, receiver) = mpsc::channel();
+        EventLoopWindowTarget { sender, receiver }
     }
 }
 
@@ -90,23 +92,50 @@ impl<T> EventLoop<T> {
     }
 
     pub fn create_proxy(&self) -> Proxy<T> {
-        Proxy::default()
+        Proxy::new(self.window_target.inner.sender.clone())
     }
 }
 
 #[derive(Clone)]
 pub struct Proxy<T> {
-    _marker: PhantomData<T>,
+    sender: mpsc::Sender<T>,
+    source: CFRunLoopSourceRef,
 }
 
-impl<T> Default for Proxy<T> {
-    fn default() -> Self {
-        Proxy { _marker: PhantomData }
-    }
-}
+unsafe impl<T> Send for Proxy<T> {}
+unsafe impl<T> Sync for Proxy<T> {}
 
 impl<T> Proxy<T> {
-    pub fn send_event(&self, _event: T) -> Result<(), EventLoopClosed> {
-        unimplemented!();
+    fn new(sender: mpsc::Sender<T>) -> Self {
+        unsafe {
+            // just wakeup the eventloop
+            extern "C" fn event_loop_proxy_handler(_: *mut c_void) {}
+
+            // adding a Source to the main CFRunLoop lets us wake it up and
+            // process user events through the normal OS EventLoop mechanisms.
+            let rl = CFRunLoopGetMain();
+            let mut context: CFRunLoopSourceContext = mem::zeroed();
+            context.perform = event_loop_proxy_handler;
+            let source = CFRunLoopSourceCreate(
+                ptr::null_mut(),
+                CFIndex::max_value() - 1,
+                &mut context,
+            );
+            CFRunLoopAddSource(rl, source, kCFRunLoopCommonModes);
+            CFRunLoopWakeUp(rl);
+
+            Proxy { sender, source }
+        }
+    }
+
+    pub fn send_event(&self, event: T) -> Result<(), EventLoopClosed> {
+        self.sender.send(event).map_err(|_| EventLoopClosed)?;
+        unsafe {
+            // let the main thread know there's a new event
+            CFRunLoopSourceSignal(self.source);
+            let rl = CFRunLoopGetMain();
+            CFRunLoopWakeUp(rl);
+        }
+        Ok(())
     }
 }

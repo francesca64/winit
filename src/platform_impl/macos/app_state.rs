@@ -27,15 +27,16 @@ impl Event<Never> {
 
 pub trait EventHandler: Debug {
     fn handle_nonuser_event(&mut self, event: Event<Never>, control_flow: &mut ControlFlow);
-    //fn handle_user_events(&mut self, control_flow: &mut ControlFlow);
+    fn handle_user_events(&mut self, control_flow: &mut ControlFlow);
 }
 
 struct EventLoopHandler<F, T: 'static> {
     callback: F,
+    will_exit: bool,
     window_target: RootWindowTarget<T>,
 }
 
-impl<F, T: 'static> Debug for EventLoopHandler<F, T> {
+impl<F, T> Debug for EventLoopHandler<F, T> {
     fn fmt(&self, formatter: &mut Formatter) -> fmt::Result {
         formatter.debug_struct("EventLoopHandler")
             .field("window_target", &self.window_target)
@@ -54,17 +55,27 @@ where
             &self.window_target,
             control_flow,
         );
+        self.will_exit |= *control_flow == ControlFlow::Exit;
+        if self.will_exit {
+            *control_flow = ControlFlow::Exit;
+        }
     }
 
-    /*fn handle_user_events(&mut self, control_flow: &mut ControlFlow) {
-        for event in self.event_loop.inner.receiver.try_iter() {
+    fn handle_user_events(&mut self, control_flow: &mut ControlFlow) {
+        let mut will_exit = self.will_exit;
+        for event in self.window_target.inner.receiver.try_iter() {
             (self.callback)(
                 Event::UserEvent(event),
-                &self.event_loop,
+                &self.window_target,
                 control_flow,
             );
+            will_exit |= *control_flow == ControlFlow::Exit;
+            if will_exit {
+                *control_flow = ControlFlow::Exit;
+            }
         }
-    }*/
+        self.will_exit = will_exit;
+    }
 }
 
 #[derive(Default)]
@@ -98,7 +109,7 @@ impl Handler {
         self.ready.store(true, Ordering::Release);
     }
 
-    fn is_control_flow_exit(&self) -> bool {
+    fn should_exit(&self) -> bool {
         *self.control_flow.lock().unwrap() == ControlFlow::Exit
     }
 
@@ -134,6 +145,14 @@ impl Handler {
             );
         }
     }
+
+    fn handle_user_events(&self) {
+        if let Some(ref mut callback) = *self.callback.lock().unwrap() {
+            callback.handle_user_events(
+                &mut *self.control_flow.lock().unwrap(),
+            );
+        }
+    }
 }
 
 pub enum AppState {}
@@ -146,6 +165,7 @@ impl AppState {
     {
         *HANDLER.callback.lock().unwrap() = Some(Box::new(EventLoopHandler {
             callback,
+            will_exit: false,
             window_target,
         }));
     }
@@ -203,14 +223,12 @@ impl AppState {
 
     pub fn cleared() {
         if !HANDLER.is_ready() { return }
-        let mut will_stop = HANDLER.is_control_flow_exit();
+        HANDLER.handle_user_events();
         for event in HANDLER.take_events() {
             HANDLER.handle_nonuser_event(event);
-            will_stop |= HANDLER.is_control_flow_exit();
         }
         HANDLER.handle_nonuser_event(Event::EventsCleared);
-        will_stop |= HANDLER.is_control_flow_exit();
-        if will_stop {
+        if HANDLER.should_exit() {
             let _: () = unsafe { msg_send![NSApp(), stop:nil] };
             return
         }

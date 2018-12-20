@@ -1,7 +1,7 @@
-// This is a pretty close port of the implementation in GLFW:
-// https://github.com/glfw/glfw/blob/7ef34eb06de54dd9186d3d21a401b2ef819b59e7/src/cocoa_window.m
-
-use std::{boxed::Box, collections::VecDeque, os::raw::*, slice, str};
+use std::{
+    boxed::Box, collections::VecDeque, os::raw::*, slice, str,
+    sync::{Arc, Mutex, Weak},
+};
 
 use cocoa::{
     appkit::{NSApp, NSEvent, NSEventModifierFlags, NSEventPhase, NSView, NSWindow},
@@ -32,15 +32,19 @@ struct Modifiers {
 
 struct ViewState {
     nswindow: id,
+    pub cursor: Arc<Mutex<util::Cursor>>,
     ime_spot: Option<(f64, f64)>,
     raw_characters: Option<String>,
     is_key_down: bool,
     modifiers: Modifiers,
 }
 
-pub fn new_view(nswindow: id) -> IdRef {
+pub fn new_view(nswindow: id) -> (IdRef, Weak<Mutex<util::Cursor>>) {
+    let cursor = Default::default();
+    let cursor_access = Arc::downgrade(&cursor);
     let state = ViewState {
         nswindow,
+        cursor,
         ime_spot: None,
         raw_characters: None,
         is_key_down: false,
@@ -50,23 +54,21 @@ pub fn new_view(nswindow: id) -> IdRef {
         // This is free'd in `dealloc`
         let state_ptr = Box::into_raw(Box::new(state)) as *mut c_void;
         let nsview: id = msg_send![VIEW_CLASS.0, alloc];
-        IdRef::new(msg_send![nsview, initWithWinit:state_ptr])
+        (IdRef::new(msg_send![nsview, initWithWinit:state_ptr]), cursor_access)
     }
 }
 
-pub fn set_ime_spot(nsview: id, input_context: id, x: f64, y: f64) {
-    unsafe {
-        let state_ptr: *mut c_void = *(*nsview).get_mut_ivar("winitState");
-        let state = &mut *(state_ptr as *mut ViewState);
-        let content_rect = NSWindow::contentRectForFrameRect_(
-            state.nswindow,
-            NSWindow::frame(state.nswindow),
-        );
-        let base_x = content_rect.origin.x as f64;
-        let base_y = (content_rect.origin.y + content_rect.size.height) as f64;
-        state.ime_spot = Some((base_x + x, base_y - y));
-        let _: () = msg_send![input_context, invalidateCharacterCoordinates];
-    }
+pub unsafe fn set_ime_spot(nsview: id, input_context: id, x: f64, y: f64) {
+    let state_ptr: *mut c_void = *(*nsview).get_mut_ivar("winitState");
+    let state = &mut *(state_ptr as *mut ViewState);
+    let content_rect = NSWindow::contentRectForFrameRect_(
+        state.nswindow,
+        NSWindow::frame(state.nswindow),
+    );
+    let base_x = content_rect.origin.x as f64;
+    let base_y = (content_rect.origin.y + content_rect.size.height) as f64;
+    state.ime_spot = Some((base_x + x, base_y - y));
+    let _: () = msg_send![input_context, invalidateCharacterCoordinates];
 }
 
 struct ViewClass(*const Class);
@@ -92,6 +94,14 @@ lazy_static! {
         decl.add_method(
             sel!(acceptsFirstResponder),
             accepts_first_responder as extern fn(&Object, Sel) -> BOOL,
+        );
+        decl.add_method(
+            sel!(touchBar),
+            touch_bar as extern fn(&Object, Sel) -> BOOL,
+        );
+        decl.add_method(
+            sel!(resetCursorRects),
+            reset_cursor_rects as extern fn(&Object, Sel),
         );
         decl.add_method(
             sel!(hasMarkedText),
@@ -269,6 +279,28 @@ extern fn view_did_move_to_window(this: &Object, _sel: Sel) {
 extern fn accepts_first_responder(_this: &Object, _sel: Sel) -> BOOL {
     YES
 }
+
+// This is necessary to prevent a beefy terminal error on MacBook Pros:
+// IMKInputSession [0x7fc573576ff0 presentFunctionRowItemTextInputViewWithEndpoint:completionHandler:] : [self textInputContext]=0x7fc573558e10 *NO* NSRemoteViewController to client, NSError=Error Domain=NSCocoaErrorDomain Code=4099 "The connection from pid 0 was invalidated from this process." UserInfo={NSDebugDescription=The connection from pid 0 was invalidated from this process.}, com.apple.inputmethod.EmojiFunctionRowItem
+// TODO: Add an API extension for using `NSTouchBar`
+extern fn touch_bar(_this: &Object, _sel: Sel) -> BOOL {
+    NO
+}
+
+extern fn reset_cursor_rects(this: &Object, _sel: Sel) {
+    unsafe {
+        let state_ptr: *mut c_void = *this.get_ivar("winitState");
+        let state = &mut *(state_ptr as *mut ViewState);
+
+        let bounds: NSRect = msg_send![this, bounds];
+        let cursor = state.cursor.lock().unwrap().load();
+        let _: () = msg_send![this,
+            addCursorRect:bounds
+            cursor:cursor
+        ];
+    }
+}
+
 
 extern fn has_marked_text(this: &Object, _sel: Sel) -> BOOL {
     unsafe {

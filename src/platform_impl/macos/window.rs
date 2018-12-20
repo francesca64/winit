@@ -1,6 +1,6 @@
 use std::{
     collections::VecDeque, f64, os::raw::c_void,
-    sync::{Arc, atomic::{Ordering, AtomicBool}, Mutex},
+    sync::{Arc, atomic::{Ordering, AtomicBool}, Mutex, Weak},
 };
 
 use cocoa::{
@@ -24,7 +24,7 @@ use platform::macos::{ActivationPolicy, WindowExtMacOS};
 use platform_impl::platform::{
     {ffi, util::{self, IdRef}},
     monitor::{self, MonitorHandle},
-    view::{new_view, set_ime_spot},
+    view::{self, new_view},
     window_delegate::{WindowDelegate, WindowDelegateState},
 };
 
@@ -67,8 +67,9 @@ fn create_app(activation_policy: ActivationPolicy) -> Option<id> {
     }
 }
 
-unsafe fn create_view(nswindow: id) -> Option<IdRef> {
-    new_view(nswindow).non_nil().map(|nsview| {
+unsafe fn create_view(nswindow: id) -> Option<(IdRef, Weak<Mutex<util::Cursor>>)> {
+    let (nsview, cursor) = new_view(nswindow);
+    nsview.non_nil().map(|nsview| {
         nsview.setWantsBestResolutionOpenGLSurface_(YES);
 
         // On Mojave, views automatically become layer-backed shortly after being added to
@@ -82,7 +83,7 @@ unsafe fn create_view(nswindow: id) -> Option<IdRef> {
 
         nswindow.setContentView_(*nsview);
         nswindow.makeFirstResponder_(*nsview);
-        nsview
+        (nsview, cursor)
     })
 }
 
@@ -234,6 +235,7 @@ pub struct UnownedWindow {
     input_context: IdRef, // never changes
     pub shared_state: Arc<Mutex<SharedState>>,
     decorations: AtomicBool,
+    cursor: Weak<Mutex<util::Cursor>>,
     cursor_hidden: AtomicBool,
 }
 
@@ -263,7 +265,7 @@ impl UnownedWindow {
             CreationError::OsError(format!("Couldn't create `NSWindow`"))
         })?;
 
-        let nsview = unsafe { create_view(*nswindow) }.ok_or_else(|| {
+        let (nsview, cursor) = unsafe { create_view(*nswindow) }.ok_or_else(|| {
             unsafe { pool.drain() };
             CreationError::OsError(format!("Couldn't create `NSView`"))
         })?;
@@ -305,6 +307,7 @@ impl UnownedWindow {
             input_context,
             shared_state: Arc::new(Mutex::new(win_attribs.into())),
             decorations: AtomicBool::new(decorations),
+            cursor,
             cursor_hidden: Default::default(),
         });
 
@@ -477,9 +480,14 @@ impl UnownedWindow {
     }
 
     pub fn set_cursor(&self, cursor: MouseCursor) {
+        let cursor = util::Cursor::from(cursor);
+        if let Some(cursor_access) = self.cursor.upgrade() {
+            *cursor_access.lock().unwrap() = cursor;
+        }
         unsafe {
-            let cursor = util::CursorType::from(cursor).load();
-            let _: () = msg_send![cursor, set];
+            let _: () = msg_send![*self.nswindow,
+                invalidateCursorRectsForView:*self.nsview
+            ];
         }
     }
 
@@ -707,7 +715,14 @@ impl UnownedWindow {
 
     #[inline]
     pub fn set_ime_spot(&self, logical_spot: LogicalPosition) {
-        set_ime_spot(*self.nsview, *self.input_context, logical_spot.x, logical_spot.y);
+        unsafe {
+            view::set_ime_spot(
+                *self.nsview,
+                *self.input_context,
+                logical_spot.x,
+                logical_spot.y,
+            );
+        }
     }
 
     #[inline]

@@ -402,72 +402,78 @@ pub unsafe fn create_input_context(view: id) -> IdRef {
     IdRef::new(input_context)
 }
 
-pub enum CursorType {
+pub enum Cursor {
     Native(&'static str),
     Undocumented(&'static str),
     WebKit(&'static str),
 }
 
-impl From<MouseCursor> for CursorType {
+impl From<MouseCursor> for Cursor {
     fn from(cursor: MouseCursor) -> Self {
         match cursor {
-            MouseCursor::Arrow | MouseCursor::Default => CursorType::Native("arrowCursor"),
-            MouseCursor::Hand => CursorType::Native("pointingHandCursor"),
-            MouseCursor::Grabbing | MouseCursor::Grab => CursorType::Native("closedHandCursor"),
-            MouseCursor::Text => CursorType::Native("IBeamCursor"),
-            MouseCursor::VerticalText => CursorType::Native("IBeamCursorForVerticalLayout"),
-            MouseCursor::Copy => CursorType::Native("dragCopyCursor"),
-            MouseCursor::Alias => CursorType::Native("dragLinkCursor"),
-            MouseCursor::NotAllowed | MouseCursor::NoDrop => CursorType::Native("operationNotAllowedCursor"),
-            MouseCursor::ContextMenu => CursorType::Native("contextualMenuCursor"),
-            MouseCursor::Crosshair => CursorType::Native("crosshairCursor"),
-            MouseCursor::EResize => CursorType::Native("resizeRightCursor"),
-            MouseCursor::NResize => CursorType::Native("resizeUpCursor"),
-            MouseCursor::WResize => CursorType::Native("resizeLeftCursor"),
-            MouseCursor::SResize => CursorType::Native("resizeDownCursor"),
-            MouseCursor::EwResize | MouseCursor::ColResize => CursorType::Native("resizeLeftRightCursor"),
-            MouseCursor::NsResize | MouseCursor::RowResize => CursorType::Native("resizeUpDownCursor"),
+            MouseCursor::Arrow | MouseCursor::Default => Cursor::Native("arrowCursor"),
+            MouseCursor::Hand => Cursor::Native("pointingHandCursor"),
+            MouseCursor::Grabbing | MouseCursor::Grab => Cursor::Native("closedHandCursor"),
+            MouseCursor::Text => Cursor::Native("IBeamCursor"),
+            MouseCursor::VerticalText => Cursor::Native("IBeamCursorForVerticalLayout"),
+            MouseCursor::Copy => Cursor::Native("dragCopyCursor"),
+            MouseCursor::Alias => Cursor::Native("dragLinkCursor"),
+            MouseCursor::NotAllowed | MouseCursor::NoDrop => Cursor::Native("operationNotAllowedCursor"),
+            MouseCursor::ContextMenu => Cursor::Native("contextualMenuCursor"),
+            MouseCursor::Crosshair => Cursor::Native("crosshairCursor"),
+            MouseCursor::EResize => Cursor::Native("resizeRightCursor"),
+            MouseCursor::NResize => Cursor::Native("resizeUpCursor"),
+            MouseCursor::WResize => Cursor::Native("resizeLeftCursor"),
+            MouseCursor::SResize => Cursor::Native("resizeDownCursor"),
+            MouseCursor::EwResize | MouseCursor::ColResize => Cursor::Native("resizeLeftRightCursor"),
+            MouseCursor::NsResize | MouseCursor::RowResize => Cursor::Native("resizeUpDownCursor"),
 
             // Undocumented cursors: https://stackoverflow.com/a/46635398/5435443
-            MouseCursor::Help => CursorType::Undocumented("_helpCursor"),
-            MouseCursor::ZoomIn => CursorType::Undocumented("_zoomInCursor"),
-            MouseCursor::ZoomOut => CursorType::Undocumented("_zoomOutCursor"),
-            MouseCursor::NeResize => CursorType::Undocumented("_windowResizeNorthEastCursor"),
-            MouseCursor::NwResize => CursorType::Undocumented("_windowResizeNorthWestCursor"),
-            MouseCursor::SeResize => CursorType::Undocumented("_windowResizeSouthEastCursor"),
-            MouseCursor::SwResize => CursorType::Undocumented("_windowResizeSouthWestCursor"),
-            MouseCursor::NeswResize => CursorType::Undocumented("_windowResizeNorthEastSouthWestCursor"),
-            MouseCursor::NwseResize => CursorType::Undocumented("_windowResizeNorthWestSouthEastCursor"),
+            MouseCursor::Help => Cursor::Undocumented("_helpCursor"),
+            MouseCursor::ZoomIn => Cursor::Undocumented("_zoomInCursor"),
+            MouseCursor::ZoomOut => Cursor::Undocumented("_zoomOutCursor"),
+            MouseCursor::NeResize => Cursor::Undocumented("_windowResizeNorthEastCursor"),
+            MouseCursor::NwResize => Cursor::Undocumented("_windowResizeNorthWestCursor"),
+            MouseCursor::SeResize => Cursor::Undocumented("_windowResizeSouthEastCursor"),
+            MouseCursor::SwResize => Cursor::Undocumented("_windowResizeSouthWestCursor"),
+            MouseCursor::NeswResize => Cursor::Undocumented("_windowResizeNorthEastSouthWestCursor"),
+            MouseCursor::NwseResize => Cursor::Undocumented("_windowResizeNorthWestSouthEastCursor"),
 
             // While these are available, the former just loads a white arrow,
             // and the latter loads an ugly deflated beachball!
-            // MouseCursor::Move => CursorType::Undocumented("_moveCursor"),
-            // MouseCursor::Wait => CursorType::Undocumented("_waitCursor"),
+            // MouseCursor::Move => Cursor::Undocumented("_moveCursor"),
+            // MouseCursor::Wait => Cursor::Undocumented("_waitCursor"),
 
             // An even more undocumented cursor...
             // https://bugs.eclipse.org/bugs/show_bug.cgi?id=522349
             // This is the wrong semantics for `Wait`, but it's the same as
             // what's used in Safari and Chrome.
-            MouseCursor::Wait | MouseCursor::Progress => CursorType::Undocumented("busyButClickableCursor"),
+            MouseCursor::Wait | MouseCursor::Progress => Cursor::Undocumented("busyButClickableCursor"),
 
             // For the rest, we can just snatch the cursors from WebKit...
             // They fit the style of the native cursors, and will seem
             // completely standard to macOS users.
             // https://stackoverflow.com/a/21786835/5435443
-            MouseCursor::Move | MouseCursor::AllScroll => CursorType::WebKit("move"),
-            MouseCursor::Cell => CursorType::WebKit("cell"),
+            MouseCursor::Move | MouseCursor::AllScroll => Cursor::WebKit("move"),
+            MouseCursor::Cell => Cursor::WebKit("cell"),
         }
     }
 }
 
-impl CursorType {
-    pub unsafe fn load(self) -> id {
+impl Default for Cursor {
+    fn default() -> Self {
+        Cursor::Native("arrowCursor")
+    }
+}
+
+impl Cursor {
+    pub unsafe fn load(&self) -> id {
         match self {
-            CursorType::Native(cursor_name) => {
+            Cursor::Native(cursor_name) => {
                 let sel = Sel::register(cursor_name);
                 msg_send![class!(NSCursor), performSelector:sel]
             },
-            CursorType::Undocumented(cursor_name) => {
+            Cursor::Undocumented(cursor_name) => {
                 let class = class!(NSCursor);
                 let sel = Sel::register(cursor_name);
                 let sel = if msg_send![class, respondsToSelector:sel] {
@@ -478,7 +484,7 @@ impl CursorType {
                 };
                 msg_send![class, performSelector:sel]
             },
-            CursorType::WebKit(cursor_name) => load_webkit_cursor(cursor_name),
+            Cursor::WebKit(cursor_name) => load_webkit_cursor(cursor_name),
         }
     }
 }
