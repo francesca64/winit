@@ -239,6 +239,13 @@ impl AppState {
         HANDLER.events().append(&mut events);
     }
 
+    pub fn send_event_immediately(event: Event<Never>) {
+        if !unsafe { msg_send![class!(NSThread), isMainThread] } {
+            panic!("uh-oh");
+        }
+        HANDLER.handle_nonuser_event(event);
+    }
+
     pub fn cleared() {
         if !HANDLER.is_ready() { return }
         HANDLER.handle_user_events();
