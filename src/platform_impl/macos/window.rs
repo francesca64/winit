@@ -26,7 +26,7 @@ use platform::macos::{ActivationPolicy, WindowExtMacOS};
 use platform_impl::platform::{
     app_state::AppState, ffi, monitor::{self, MonitorHandle},
     util::{self, IdRef}, view::{self, new_view},
-    window_delegate::{WindowDelegate, WindowDelegateState},
+    window_delegate::new_delegate,
 };
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -93,7 +93,7 @@ fn create_window(
     pl_attrs: &PlatformSpecificWindowBuilderAttributes,
 ) -> Option<IdRef> {
     unsafe {
-        let autoreleasepool = NSAutoreleasePool::new(nil);
+        let pool = NSAutoreleasePool::new(nil);
         let screen = match attrs.fullscreen {
             Some(ref monitor_id) => {
                 let monitor_screen = monitor_id.inner.get_nsscreen();
@@ -185,7 +185,7 @@ fn create_window(
             nswindow.center();
             nswindow
         });
-        let _: () = msg_send![autoreleasepool, drain];
+        pool.drain();
         res
     }
 }
@@ -247,7 +247,7 @@ impl UnownedWindow {
     pub fn new(
         mut win_attribs: WindowAttributes,
         pl_attribs: PlatformSpecificWindowBuilderAttributes,
-    ) -> Result<(Arc<Self>, WindowDelegate), CreationError> {
+    ) -> Result<(Arc<Self>, IdRef), CreationError> {
         unsafe {
             if !msg_send![class!(NSThread), isMainThread] {
                 panic!("Windows can only be created on the main thread on macOS");
@@ -286,7 +286,7 @@ impl UnownedWindow {
 
             use cocoa::foundation::NSArray;
             // register for drag and drop operations.
-            let _: () = msg_send![*nswindow, registerForDraggedTypes:NSArray::arrayWithObject(
+            let () = msg_send![*nswindow, registerForDraggedTypes:NSArray::arrayWithObject(
                 nil,
                 appkit::NSFilenamesPboardType,
             )];
@@ -312,10 +312,7 @@ impl UnownedWindow {
             cursor_hidden: Default::default(),
         });
 
-        let delegate = WindowDelegate::new(WindowDelegateState::new(
-            &window,
-            fullscreen.is_some(),
-        ));
+        let delegate = new_delegate(&window, fullscreen.is_some());
 
         // Set fullscreen mode after we setup everything
         if let Some(monitor) = fullscreen {
@@ -344,7 +341,7 @@ impl UnownedWindow {
             window.set_maximized(maximized);
         }
 
-        let _: () = unsafe { msg_send![pool, drain] };
+        unsafe { pool.drain() };
 
         Ok((window, delegate))
     }
@@ -550,7 +547,7 @@ impl UnownedWindow {
 
         // Roll back temp styles
         if needs_temp_mask {
-            self.set_style_mask_sync(curr_mask);
+            self.set_style_mask_async(curr_mask);
         }
 
         is_zoomed != 0
@@ -617,6 +614,7 @@ impl UnownedWindow {
                         NSSize::new(800.0, 600.0),
                     ))
                 };
+                // This probably isn't thread-safe!
                 self.nswindow.setFrame_display_(new_rect, 0);
             }
         }

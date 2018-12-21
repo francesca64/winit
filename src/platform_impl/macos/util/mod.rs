@@ -24,16 +24,16 @@ pub const EMPTY_RANGE: ffi::NSRange = ffi::NSRange {
 pub struct IdRef(id);
 
 impl IdRef {
-    pub fn new(i: id) -> IdRef {
-        IdRef(i)
+    pub fn new(inner: id) -> IdRef {
+        IdRef(inner)
     }
 
     #[allow(dead_code)]
-    pub fn retain(i: id) -> IdRef {
-        if i != nil {
-            let _: id = unsafe { msg_send![i, retain] };
+    pub fn retain(inner: id) -> IdRef {
+        if inner != nil {
+            let () = unsafe { msg_send![inner, retain] };
         }
-        IdRef(i)
+        IdRef(inner)
     }
 
     pub fn non_nil(self) -> Option<IdRef> {
@@ -45,9 +45,9 @@ impl Drop for IdRef {
     fn drop(&mut self) {
         if self.0 != nil {
             unsafe {
-                let autoreleasepool = NSAutoreleasePool::new(nil);
-                let _ : () = msg_send![self.0, release];
-                let _ : () = msg_send![autoreleasepool, release];
+                let pool = NSAutoreleasePool::new(nil);
+                let () = msg_send![self.0, release];
+                pool.drain();
             };
         }
     }
@@ -89,7 +89,7 @@ pub unsafe fn create_input_context(view: id) -> IdRef {
 
 #[allow(dead_code)]
 pub unsafe fn open_emoji_picker() {
-    let _: () = msg_send![NSApp(), orderFrontCharacterPalette:nil];
+    let () = msg_send![NSApp(), orderFrontCharacterPalette:nil];
 }
 
 pub extern fn yes(_: &Object, _: Sel) -> BOOL {

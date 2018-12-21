@@ -90,44 +90,13 @@ impl WindowDelegateState {
     }
 }
 
-pub struct WindowDelegate {
-    state: Box<WindowDelegateState>,
-    _this: IdRef,
-}
-
-impl WindowDelegate {
-    pub fn new(state: WindowDelegateState) -> WindowDelegate {
-        // Box the state so it will have a fixed address
-        let mut state = Box::new(state);
-        let state_ptr: *mut WindowDelegateState = &mut *state;
-        unsafe {
-            let delegate = IdRef::new(msg_send![WINDOW_DELEGATE_CLASS.0, new]);
-
-            // setDelegate uses autorelease on objects,
-            // so we need to use autorelease too.
-            let autoreleasepool = NSAutoreleasePool::new(nil);
-
-            (&mut **delegate).set_ivar("winitState", state_ptr as *mut c_void);
-            let _: () = msg_send![*state.nswindow, setDelegate:*delegate];
-
-            let _: () = msg_send![autoreleasepool, drain];
-
-            WindowDelegate { state, _this: delegate }
-        }
-    }
-}
-
-impl Drop for WindowDelegate {
-    fn drop(&mut self) {
-        trace!("Dropping `WindowDelegate` ({:?})", self as *mut _);
-        unsafe {
-            // Nil the window's delegate so it doesn't still reference us
-            // NOTE: setDelegate:nil at first retains the previous value,
-            // and then autoreleases it, so autorelease pool is needed
-            let autoreleasepool = NSAutoreleasePool::new(nil);
-            let _: () = msg_send![*self.state.nswindow, setDelegate:nil];
-            let _: () = msg_send![autoreleasepool, drain];
-        }
+pub fn new_delegate(window: &Arc<UnownedWindow>, initial_fullscreen: bool) -> IdRef {
+    let state = WindowDelegateState::new(window, initial_fullscreen);
+    unsafe {
+        // This is free'd in `dealloc`
+        let state_ptr = Box::into_raw(Box::new(state)) as *mut c_void;
+        let delegate: id = msg_send![WINDOW_DELEGATE_CLASS.0, alloc];
+        IdRef::new(msg_send![delegate, initWithWinit:state_ptr])
     }
 }
 
@@ -139,6 +108,15 @@ lazy_static! {
     static ref WINDOW_DELEGATE_CLASS: WindowDelegateClass = unsafe {
         let superclass = class!(NSResponder);
         let mut decl = ClassDecl::new("WinitWindowDelegate", superclass).unwrap();
+
+        decl.add_method(
+            sel!(dealloc),
+            dealloc as extern fn(&Object, Sel),
+        );
+        decl.add_method(
+            sel!(initWithWinit:),
+            init_with_winit as extern fn(&Object, Sel, *mut c_void) -> id,
+        );
 
         decl.add_method(
             sel!(windowShouldClose:),
@@ -211,7 +189,6 @@ lazy_static! {
         );
 
         decl.add_ivar::<*mut c_void>("winitState");
-
         WindowDelegateClass(decl.register())
     };
 }
@@ -226,45 +203,66 @@ fn with_state<F: FnOnce(&mut WindowDelegateState) -> T, T>(this: &Object, callba
     callback(state_ptr);
 }
 
-// extern fn dealloc(this: &Object, _sel: Sel) {
-//     with_state(this, |state| unsafe {
-//         Box::from_raw(state as *mut WindowDelegateState);
-//     });
-// }
+extern fn dealloc(this: &Object, _sel: Sel) {
+    with_state(this, |state| unsafe {
+        Box::from_raw(state as *mut WindowDelegateState);
+    });
+}
+
+extern fn init_with_winit(this: &Object, _sel: Sel, state: *mut c_void) -> id {
+    unsafe {
+        let this: id = msg_send![this, init];
+        if this != nil {
+            (*this).set_ivar("winitState", state);
+            with_state(&*this, |state| {
+                let () = msg_send![*state.nswindow, setDelegate:this];
+            });
+        }
+        this
+    }
+}
 
 extern fn window_should_close(this: &Object, _: Sel, _: id) -> BOOL {
-    trace!("Triggered `windowShouldClose`");
+    trace!("Triggered `windowShouldClose:`");
     with_state(this, |state| state.emit_event(WindowEvent::CloseRequested));
-    trace!("Completed `windowShouldClose`");
+    trace!("Completed `windowShouldClose:`");
     NO
 }
 
 extern fn window_will_close(this: &Object, _: Sel, _: id) {
-    trace!("Triggered `windowWillClose`");
-    with_state(this, |state| state.emit_event(WindowEvent::Destroyed));
-    trace!("Completed `windowWillClose`");
+    trace!("Triggered `windowWillClose:`");
+    with_state(this, |state| unsafe {
+        // `setDelegate:` retains the previous value and then autoreleases it
+        let pool = NSAutoreleasePool::new(nil);
+        // Since El Capitan, we need to be careful that delegate methods can't
+        // be called after the window closes.
+        let () = msg_send![*state.nswindow, setDelegate:nil];
+        pool.drain();
+        state.emit_event(WindowEvent::Destroyed);
+    });
+    trace!("Completed `windowWillClose:`");
 }
 
 extern fn window_did_resize(this: &Object, _: Sel, _: id) {
-    trace!("Triggered `windowDidResize`");
+    trace!("Triggered `windowDidResize:`");
     with_state(this, |state| {
         state.emit_resize_event();
         state.emit_move_event();
     });
-    trace!("Completed `windowDidResize`");
+    trace!("Completed `windowDidResize:`");
 }
 
 // This won't be triggered if the move was part of a resize.
 extern fn window_did_move(this: &Object, _: Sel, _: id) {
-    trace!("Triggered `windowDidMove`");
+    trace!("Triggered `windowDidMove:`");
     with_state(this, |state| {
         state.emit_move_event();
     });
-    trace!("Completed `windowDidMove`");
+    trace!("Completed `windowDidMove:`");
 }
 
 extern fn window_did_change_screen(this: &Object, _: Sel, _: id) {
-    trace!("Triggered `windowDidChangeScreen`");
+    trace!("Triggered `windowDidChangeScreen:`");
     with_state(this, |state| {
         let dpi_factor = unsafe {
             NSWindow::backingScaleFactor(*state.nswindow)
@@ -275,12 +273,12 @@ extern fn window_did_change_screen(this: &Object, _: Sel, _: id) {
             state.emit_resize_event();
         }
     });
-    trace!("Completed `windowDidChangeScreen`");
+    trace!("Completed `windowDidChangeScreen:`");
 }
 
 // This will always be called before `window_did_change_screen`.
 extern fn window_did_change_backing_properties(this: &Object, _:Sel, _:id) {
-    trace!("Triggered `windowDidChangeBackingProperties`");
+    trace!("Triggered `windowDidChangeBackingProperties:`");
     with_state(this, |state| {
         let dpi_factor = unsafe {
             NSWindow::backingScaleFactor(*state.nswindow)
@@ -291,30 +289,30 @@ extern fn window_did_change_backing_properties(this: &Object, _:Sel, _:id) {
             state.emit_resize_event();
         }
     });
-    trace!("Completed `windowDidChangeBackingProperties`");
+    trace!("Completed `windowDidChangeBackingProperties:`");
 }
 
 extern fn window_did_become_key(this: &Object, _: Sel, _: id) {
-    trace!("Triggered `windowDidBecomeKey`");
+    trace!("Triggered `windowDidBecomeKey:`");
     with_state(this, |state| {
         // TODO: center the cursor if the window had mouse grab when it
         // lost focus
         state.emit_event(WindowEvent::Focused(true));
     });
-    trace!("Completed `windowDidBecomeKey`");
+    trace!("Completed `windowDidBecomeKey:`");
 }
 
 extern fn window_did_resign_key(this: &Object, _: Sel, _: id) {
-    trace!("Triggered `windowDidResignKey`");
+    trace!("Triggered `windowDidResignKey:`");
     with_state(this, |state| {
         state.emit_event(WindowEvent::Focused(false));
     });
-    trace!("Completed `windowDidResignKey`");
+    trace!("Completed `windowDidResignKey:`");
 }
 
 /// Invoked when the dragged image enters destination bounds or frame
 extern fn dragging_entered(this: &Object, _: Sel, sender: id) -> BOOL {
-    trace!("Triggered `draggingEntered`");
+    trace!("Triggered `draggingEntered:`");
 
     use cocoa::appkit::NSPasteboard;
     use cocoa::foundation::NSFastEnumeration;
@@ -337,20 +335,20 @@ extern fn dragging_entered(this: &Object, _: Sel, sender: id) -> BOOL {
         }
     };
 
-    trace!("Completed `draggingEntered`");
+    trace!("Completed `draggingEntered:`");
     YES
 }
 
 /// Invoked when the image is released
 extern fn prepare_for_drag_operation(_: &Object, _: Sel, _: id) -> BOOL {
-    trace!("Triggered `prepareForDragOperation`");
-    trace!("Completed `prepareForDragOperation`");
+    trace!("Triggered `prepareForDragOperation:`");
+    trace!("Completed `prepareForDragOperation:`");
     YES
 }
 
 /// Invoked after the released image has been removed from the screen
 extern fn perform_drag_operation(this: &Object, _: Sel, sender: id) -> BOOL {
-    trace!("Triggered `performDragOperation`");
+    trace!("Triggered `performDragOperation:`");
 
     use cocoa::appkit::NSPasteboard;
     use cocoa::foundation::NSFastEnumeration;
@@ -373,37 +371,37 @@ extern fn perform_drag_operation(this: &Object, _: Sel, sender: id) -> BOOL {
         }
     };
 
-    trace!("Completed `performDragOperation`");
+    trace!("Completed `performDragOperation:`");
     YES
 }
 
 /// Invoked when the dragging operation is complete
 extern fn conclude_drag_operation(_: &Object, _: Sel, _: id) {
-    trace!("Triggered `concludeDragOperation`");
-    trace!("Completed `concludeDragOperation`");
+    trace!("Triggered `concludeDragOperation:`");
+    trace!("Completed `concludeDragOperation:`");
 }
 
 /// Invoked when the dragging operation is cancelled
 extern fn dragging_exited(this: &Object, _: Sel, _: id) {
-    trace!("Triggered `draggingExited`");
+    trace!("Triggered `draggingExited:`");
     with_state(this, |state| state.emit_event(WindowEvent::HoveredFileCancelled));
-    trace!("Completed `draggingExited`");
+    trace!("Completed `draggingExited:`");
 }
 
 /// Invoked when before enter fullscreen
 extern fn window_will_enter_fullscreen(this: &Object, _: Sel, _: id) {
-    trace!("Triggered `windowWillEnterFullscreen`");
+    trace!("Triggered `windowWillEnterFullscreen:`");
     with_state(this, |state| state.with_window(|window| {
         trace!("Locked shared state in `window_will_enter_fullscreen`");
         window.shared_state.lock().unwrap().maximized = window.is_zoomed();
         trace!("Unlocked shared state in `window_will_enter_fullscreen`");
     }));
-    trace!("Completed `windowWillEnterFullscreen`");
+    trace!("Completed `windowWillEnterFullscreen:`");
 }
 
 /// Invoked when entered fullscreen
 extern fn window_did_enter_fullscreen(this: &Object, _: Sel, _: id) {
-    trace!("Triggered `windowDidEnterFullscreen`");
+    trace!("Triggered `windowDidEnterFullscreen:`");
     with_state(this, |state| {
         state.with_window(|window| {
             let monitor = window.get_current_monitor();
@@ -413,16 +411,16 @@ extern fn window_did_enter_fullscreen(this: &Object, _: Sel, _: id) {
         });
         state.initial_fullscreen = false;
     });
-    trace!("Completed `windowDidEnterFullscreen`");
+    trace!("Completed `windowDidEnterFullscreen:`");
 }
 
 /// Invoked when exited fullscreen
 extern fn window_did_exit_fullscreen(this: &Object, _: Sel, _: id) {
-    trace!("Triggered `windowDidExitFullscreen`");
+    trace!("Triggered `windowDidExitFullscreen:`");
     with_state(this, |state| state.with_window(|window| {
         window.restore_state_from_fullscreen();
     }));
-    trace!("Completed `windowDidExitFullscreen`");
+    trace!("Completed `windowDidExitFullscreen:`");
 }
 
 /// Invoked when fail to enter fullscreen
@@ -442,7 +440,7 @@ extern fn window_did_exit_fullscreen(this: &Object, _: Sel, _: id) {
 /// This method indicates that there was an error, and you should clean up any
 /// work you may have done to prepare to enter full-screen mode.
 extern fn window_did_fail_to_enter_fullscreen(this: &Object, _: Sel, _: id) {
-    trace!("Triggered `windowDidFailToEnterFullscreen`");
+    trace!("Triggered `windowDidFailToEnterFullscreen:`");
     with_state(this, |state| {
         if state.initial_fullscreen {
             let _: () = unsafe { msg_send![*state.nswindow,
@@ -454,5 +452,5 @@ extern fn window_did_fail_to_enter_fullscreen(this: &Object, _: Sel, _: id) {
             state.with_window(|window| window.restore_state_from_fullscreen());
         }
     });
-    trace!("Completed `windowDidFailToEnterFullscreen`");
+    trace!("Completed `windowDidFailToEnterFullscreen:`");
 }

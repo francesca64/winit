@@ -25,7 +25,6 @@ pub use self::{
         Id as WindowId, PlatformSpecificWindowBuilderAttributes, UnownedWindow,
     },
 };
-use self::window_delegate::WindowDelegate;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct DeviceId;
@@ -36,7 +35,7 @@ pub(crate) const DEVICE_ID: RootDeviceId = RootDeviceId(DeviceId);
 pub struct Window {
     window: Arc<UnownedWindow>,
     // We keep this around so that it doesn't get dropped until the window does.
-    _delegate: WindowDelegate,
+    _delegate: util::IdRef,
 }
 
 unsafe impl Send for Window {}
