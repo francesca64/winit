@@ -88,9 +88,12 @@ impl<T: 'static> EventLoop<T> {
                     Event::WindowResized => resized = true,
                     Event::WindowRedrawNeeded => redraw = true,
                     Event::WindowDestroyed => {
-                        event_handler(event::Event::Suspended, self.window_target(), &mut cf);
+                        // event_handler(event::Event::Suspended, self.window_target(), &mut cf);
                     }
-                    Event::Pause => running = false,
+                    Event::Pause => {
+                        event_handler(event::Event::Suspended, self.window_target(), &mut cf);
+                        running = false;
+                    }
                     Event::Resume => running = true,
                     Event::ConfigChanged => {
                         let am = ndk_glue::native_activity().asset_manager();
